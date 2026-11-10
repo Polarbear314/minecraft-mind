@@ -1,0 +1,13 @@
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# A live vault is personal: keep your own brain out of the repo
+Agent Brain/
+
+# OS
+.DS_Store
