@@ -1,0 +1,20 @@
+{
+  "name": "minecraft-mind-agent",
+  "version": "0.1.0",
+  "description": "An AI agent that plays Minecraft with its entire memory living as markdown in an Obsidian vault",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "sim": "node src/simulate.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "canvas": "^3.1.0",
+    "dotenv": "^16.4.5",
+    "js-yaml": "^4.1.0",
+    "mineflayer": "^4.37.1",
+    "mineflayer-pathfinder": "^2.4.5",
+    "prismarine-viewer": "^1.33.0",
+    "vec3": "^0.1.10"
+  }
+}
