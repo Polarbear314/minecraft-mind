@@ -6,5 +6,5 @@
   "amygdala": { "provider": "local", "everyMs": 3000 },
   "innerVoice": { "provider": "local", "everyMs": 4000 },
   "rumination": { "provider": "local", "everyMs": 120000 },
-  "nature": { "bornKnowing": true, "reflexes": true, "growth": true, "startBorder": 128 }
+  "nature": { "bornKnowing": true, "reflexes": true, "growth": true, "startBorder": 128, "plans": true }
 }

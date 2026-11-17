@@ -69,6 +69,7 @@ function listSkills(vaultPath) {
  */
 function skillLines(vaultPath, max = 6) {
   const lines = listSkills(vaultPath)
+    .filter((s) => s.data.status !== 'withdrawn') // earned on a test that proved nothing
     .slice(0, max)
     .map((s) => `- ${s.title}: ${String(s.body).trim().replace(/\s+/g, ' ').slice(0, 150)}`);
   return lines.length ? lines.join('\n') : null;

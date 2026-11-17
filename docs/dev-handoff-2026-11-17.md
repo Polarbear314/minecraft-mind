@@ -40,6 +40,14 @@ The agreed next step (see the reasoning in the 2026-11-17 conversation; grounded
 
 Later: the **empowerment drive** (`docs/design-empowerment-goal-loop.md`) to pull "Live A Good Life" toward capability — tools, a home, expansion.
 
+## Since then (2026-11-16 evening)
+
+- **Plans and skills** built: `docs/design-plans-and-skills.md` (status section + how to re-run `npm run sayvsdo`).
+- **The world now grows on real advancements**, not surviving nights: a new Minecraft advancement since the last growth doubles the border at dawn (`brain/worldGrowth.js`, `docs/design-born-knowing.md` §3). `npm run sim`: 214 checks.
+- **Border reset to 128** by the user (RCON, 2026-11-16 ~22:40; recorded under `resets` in `State/World.md`).
+- **Agent stopped for the night** (server left running). The **deep dream** (`npm run deepdream`, which can now write plans too) wrote 3 insights, 1 subgoal and 7 plans; 11 plans exist now. Report: `Dreams/Deep Dream 2026-11-17.md`.
+- **For tomorrow:** (1) plans with `when: dusk` or `night` will always be paused by the shelter reflex and end "interrupted" (two exist: Stop And Sink At Dusk, Sink Where I Stand). Decide whether they should run under the reflex or be steered to "late day". (2) There's no plan step for "dig that block by name" (e.g. an oak log). (3) It dies in daylight after safe nights: it doesn't fight back, and it starves. (4) Commit when ready.
+
 ## Known issues / notes
 
 - Claude has not yet hit the plan's usage limit in a run; the resting/fallback path is tested in the sim but the exact CLI limit message hasn't been captured live (it is logged the first time it happens).

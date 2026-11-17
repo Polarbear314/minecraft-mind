@@ -21,7 +21,7 @@ const { isOverriding } = require('./reflexes');
 
 const CLI_TIMEOUT_MS = 30000;
 // Single acts that happen once, not courses of action to keep up for a while.
-const ONE_SHOT = new Set(['dig', 'place', 'jump', 'use', 'equip', 'eat', 'craft']);
+const ONE_SHOT = new Set(['dig', 'place', 'jump', 'use', 'equip', 'eat', 'craft', 'skill', 'stop']);
 const ANSWER_FRESH_MS = 8000; // an answer older than this describes a world gone by
 const HEALTH_CRITICAL = 8; // at/below this, survival overrides a held plan
 const HOSTILE_CLOSE = 5; // blocks: a hostile this near is a real emergency
@@ -201,4 +201,4 @@ function createClaudeCodeDecide({ model, vaultPath, minIntervalMs = 10000, holdM
   };
 }
 
-module.exports = { createClaudeCodeDecide, askClaudeCli };
+module.exports = { createClaudeCodeDecide, askClaudeCli, inDanger };

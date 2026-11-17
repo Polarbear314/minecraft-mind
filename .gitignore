@@ -14,3 +14,7 @@ Agent Brain/
 
 server/
 logs/
+
+# Python environment for the Laya fast-cortex experiments (B1)
+agent/.venv-laya/
+logs/training/

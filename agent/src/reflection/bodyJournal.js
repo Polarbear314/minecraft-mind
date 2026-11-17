@@ -103,13 +103,18 @@ function createBodyJournal({ vaultPath, logDir = null, hostileRange = 10, onNigh
         health: r1(o.health),
         food: o.food,
         isDay: o.isDay,
+        // For a learning cortex (design-plasticity-and-a-learning-cortex.md, B1):
+        // the hour, the non-hostile company, and what is carried.
+        tod: o.timeOfDay != null ? Math.round(o.timeOfDay) : null,
+        near: (o.nearbyEntities || []).filter((e) => !e.hostile).slice(0, 4).map((e) => ({ name: e.name, d: e.distance })),
+        inv: (o.inventory || []).slice(0, 8).map((i) => `${i.name} x${i.count}`).join(', ') || null,
         border: o.borderDistance,
         aff: a ? {
           sky: a.skyOverhead, roof: a.roof, walls: a.walls, enclosed: a.enclosed,
           door: a.door ? a.door.distance : null, bed: a.bed ? a.bed.distance : null, blocks: a.placeable.length,
         } : null,
         hostiles,
-        action: { type: action.type, at: action.at || null, source: action.source || null },
+        action: { type: action.type, at: action.at || null, source: action.source || null, ...(action.plan ? { plan: action.plan } : {}) },
         result: action.result || null,
         tookDamage: !!tookDamage,
         drives: drives || null,

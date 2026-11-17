@@ -65,6 +65,8 @@ function perceive(bot) {
     inventory: items.map((i) => ({ name: i.name, count: i.count })),
     inventoryFood,
     heldItem: bot.heldItem ? bot.heldItem.name : null,
+    sleeping: !!bot.isSleeping, // lying in a bed (plan test: "slept through the night")
+    digging: !!bot.targetDigBlock, // a hand still breaking a block (the plan runner waits for it)
     // Blocks to the world border's nearest edge (negative = outside), or null
     // when there is no border worth minding.
     // What the world around the body offers it right now (affordances.js).

@@ -886,6 +886,18 @@ async function main() {
   let nextFood = null;
   await tick(eater, new Drives(), vaultPath, { decide: async (d, o) => { nextFood = o.inventoryFood.map((i) => i.name); return { type: 'idle' }; } });
   dreamCheck(nextFood && nextFood.includes('rotten_flesh'), 'learned food shows up as food on the next tick');
+  // The temp copy carries what the live body has learned (it found on
+  // 2026-11-17 that wheat won't go down): this check starts from not knowing.
+  {
+    const bk = path.join(vaultPath, 'State', 'What My Body Knows.md');
+    if (fs.existsSync(bk)) {
+      const fmB = require('./vault/frontmatter');
+      const { data, body } = fmB.parse(fs.readFileSync(bk, 'utf8'));
+      data.inedible = (data.inedible || []).filter((x) => x !== 'wheat');
+      if (data.misses) delete data.misses.wheat;
+      fs.writeFileSync(bk, fmB.stringify(data, body));
+    }
+  }
   const picky = makeWorldBot();
   picky._inventory = [{ name: 'wheat', count: 2 }];
   picky.food = 5;
@@ -1147,21 +1159,56 @@ async function main() {
 
   const cmds = [];
   const quietLog = { log: () => {}, error: () => {} };
-  const growth = createWorldGrowth({ vaultPath, startSize: 128, log: quietLog, rcon: { command: async (c) => { cmds.push(c); return ''; } } });
+  // The temp copy carries the live world's growth state (border 256 since
+  // 2026-11-17): these checks start from a fresh world.
+  fs.rmSync(path.join(vaultPath, 'State', 'World.md'), { force: true });
+  // The world grows for real advancements, not for surviving nights (2026-11-16).
+  const { earnedAdvancements, advancementsFile } = require('./brain/worldGrowth');
+  const fakeServer2 = fs.mkdtempSync(path.join(os.tmpdir(), 'minecraft-mind-server-'));
+  fs.writeFileSync(path.join(fakeServer2, 'server.properties'), 'motd=x\nlevel-name=terrarium\n');
+  fs.writeFileSync(path.join(fakeServer2, 'usercache.json'), JSON.stringify([{ name: 'MindBot', uuid: 'abc-123' }]));
+  const advFile = advancementsFile(fakeServer2, 'MindBot');
+  fs.mkdirSync(path.dirname(advFile), { recursive: true });
+  const writeAdv = (done) => fs.writeFileSync(advFile, JSON.stringify({
+    'minecraft:adventure/root': { done: true },
+    'minecraft:husbandry/root': { done: true },
+    'minecraft:recipes/misc/stick': { done: true }, // recipe unlocks never count
+    'minecraft:story/mine_stone': { done: done.includes('mine_stone') },
+    ...(done.includes('sleep') ? { 'minecraft:adventure/sleep_in_bed': { done: true } } : {}),
+    DataVersion: 4189,
+  }));
+  writeAdv([]);
+  dreamCheck(advFile === path.join(fakeServer2, 'terrarium', 'advancements', 'abc-123.json') &&
+    earnedAdvancements(advFile).join() === 'minecraft:adventure/root,minecraft:husbandry/root',
+    'the bot\'s advancements are read from the server\'s own file (recipe unlocks and unfinished ones left out)');
+  const growth = createWorldGrowth({ vaultPath, startSize: 128, log: quietLog, saveWaitMs: 0,
+    readEarned: () => earnedAdvancements(advFile), rcon: { command: async (c) => { cmds.push(c); return ''; } } });
+  const grewBefore = fs.readdirSync(path.join(vaultPath, 'Experiences')).filter((f) => f.includes('The World Grew Wider')).length;
   await growth.onNight({ survived: true });
+  dreamCheck(cmds.includes('save-all') && !cmds.some((c) => c.startsWith('worldborder')) && growth.state().credited.length === 2,
+    'the first dawn under the new rule only records what it had already done (no growth for old news)');
+  for (let i = 0; i < 4; i += 1) await growth.onNight({ survived: true });
+  dreamCheck(!cmds.some((c) => c.startsWith('worldborder')) && growth.state().size === 128,
+    'surviving night after night no longer grows the world');
+  writeAdv(['mine_stone']);
   await growth.onNight({ survived: false });
+  dreamCheck(cmds.includes('worldborder set 256') && growth.state().size === 256 && growth.state().grown[0].for[0] === 'minecraft:story/mine_stone',
+    'a new advancement (mined stone) grows the world at dawn — even after a death');
+  dreamCheck(fs.readdirSync(path.join(vaultPath, 'Experiences')).filter((f) => f.includes('The World Grew Wider')).length === grewBefore + 1,
+    'and the mind remembers the world growing');
   await growth.onNight({ survived: true });
+  dreamCheck(growth.state().size === 256, 'the same advancement never counts twice');
+  writeAdv(['mine_stone', 'sleep']);
+  const flaky = createWorldGrowth({ vaultPath, startSize: 128, log: quietLog, saveWaitMs: 0,
+    readEarned: () => earnedAdvancements(advFile), rcon: { command: async () => { throw new Error('down'); } } });
+  await flaky.onNight({ survived: true });
+  dreamCheck(flaky.state().size === 256 && !flaky.state().credited.includes('minecraft:adventure/sleep_in_bed'),
+    'if the server can\'t be reached, the advancement stays uncredited and the next dawn retries');
   await growth.onNight({ survived: true });
-  dreamCheck(cmds.length === 0 && growth.state().streak === 2, 'a death resets the streak; two good nights are not yet enough');
-  await growth.onNight({ survived: true });
-  dreamCheck(cmds[0] === 'worldborder set 256' && growth.state().size === 256 && growth.state().streak === 0,
-    'three nights survived in a row: the world doubles (128 → 256)');
-  dreamCheck(fs.readdirSync(path.join(vaultPath, 'Experiences')).some((f) => f.includes('The World Grew Wider')), 'and the mind remembers the world growing');
-  const flaky = createWorldGrowth({ vaultPath, startSize: 128, log: quietLog, rcon: { command: async () => { throw new Error('down'); } } });
-  for (let i = 0; i < 3; i += 1) await flaky.onNight({ survived: true });
-  dreamCheck(flaky.state().size === 256 && flaky.state().streak === 3, 'if the server can\'t be reached, the streak is kept and the next dawn retries');
-  const late = createWorldGrowth({ vaultPath, startSize: 128, log: quietLog, rcon: { command: async (c) => { cmds.push(c); return ''; } } });
-  fs.writeFileSync(path.join(vaultPath, 'State', 'World.md'), '---\nborder_size: 1024\nstreak: 2\n---\nx');
+  dreamCheck(growth.state().size === 512, '…and it does: slept in a bed, 256 → 512');
+  const late = createWorldGrowth({ vaultPath, startSize: 128, log: quietLog, saveWaitMs: 0,
+    readEarned: () => [...earnedAdvancements(advFile), 'minecraft:story/smelt_iron'], rcon: { command: async (c) => { cmds.push(c); return ''; } } });
+  fs.writeFileSync(path.join(vaultPath, 'State', 'World.md'), '---\nborder_size: 1024\ncredited: []\n---\nx');
   await late.onNight({ survived: true });
   dreamCheck(cmds[cmds.length - 1] === 'worldborder set 59999968', 'after 1024 blocks, the next growth lifts the border: the whole world');
 
@@ -1195,6 +1242,383 @@ async function main() {
     'a slow block keeps being broken instead of the dig restarting every tick');
   const creeper7 = { ...edgeObs, nearbyEntities: [{ name: 'creeper', distance: 7, position: new Vec3(-233, 70, 600), hostile: true }] };
   dreamCheck(createReflexes().creeper(creeper7) !== null, 'a creeper at 7 blocks already sends it away (6 was too late)');
+
+  // ------------------------------- goals become plans, plans become skills
+  // (docs/design-plans-and-skills.md)
+  console.log('\n=== Plans and skills ===');
+  const planStore = require('./vault/planStore');
+  const { createPlanRunner } = require('./brain/planRunner');
+  const { applyDream: applyDreamP, buildDreamPrompt: buildDreamPromptP } = require('./reflection/dream');
+  const { writeSubgoal: writeSubgoalP, foundingGoalTitle: foundingP } = require('./vault/goalStore');
+  // The temp copy carries the live vault's plans: start from none.
+  fs.rmSync(path.join(vaultPath, 'Plans'), { recursive: true, force: true });
+  const planLogDir = fs.mkdtempSync(path.join(os.tmpdir(), 'minecraft-mind-plans-'));
+  let clock = Date.now();
+  const tickClock = () => clock;
+  const runnerFor = (opts = {}) => createPlanRunner({ vaultPath, logDir: planLogDir, autoStart: false, now: tickClock, ...opts });
+  const pDay = (extra = {}) => ({
+    ...calmObs, isDay: true, timeOfDay: 6000, heldItem: null, sleeping: false, digging: false,
+    affordances: { enclosed: false, roof: false, skyOverhead: true }, ...extra,
+  });
+  const pLate = (extra = {}) => pDay({ timeOfDay: 9000, ...extra });
+  const pNight = (extra = {}) => pDay({ isDay: false, timeOfDay: 15000, ...extra });
+  const founding = foundingP(vaultPath);
+  const goalP = (title) => writeSubgoalP(vaultPath, { title, body: title, servesTitle: founding });
+  const compiled = (raw) => planStore.compilePlan(raw).plan;
+  const planData = (name) => planStore.readPlan(vaultPath, name).data;
+  // One full turn of the loop: arbitrate/next, then the body "acts" (result), then afterTick.
+  const act = (runner, o, result, emergency = false) => {
+    const a = runner.next(o, { emergency }) || { type: 'idle', source: 'instinct' };
+    runner.afterTick({ action: a, result, observation: o });
+    return a;
+  };
+  const okR = (did = 'done') => ({ ok: true, did });
+
+  // The language and the feasibility gate.
+  const good = planStore.compilePlan({ when: 'Late Day', steps: ['Explore until near a bed', 'approach bed', 'swing at cow', 'pick up'], test: 'near a bed at nightfall' });
+  dreamCheck(good.ok && good.plan.when === 'late day' && good.plan.steps[0] === 'explore until near bed' &&
+    good.plan.steps[2] === 'swingAt cow' && good.plan.steps[3] === 'pickup' && good.plan.test === 'near bed at nightfall',
+    'a dreamed plan compiles into the body\'s own primitives and a test it can check');
+  const badVerb = planStore.compilePlan({ when: 'day', steps: ['build a house'], test: 'enclosed' });
+  const badDir = planStore.compilePlan({ when: 'day', steps: ['dig sideways'], test: 'enclosed' });
+  const badTest = planStore.compilePlan({ when: 'day', steps: ['jump'], test: 'feel safe' });
+  dreamCheck(!badVerb.ok && /no way to "build"/.test(badVerb.reason) && !badDir.ok && !badTest.ok && /feel safe/.test(badTest.reason),
+    'the feasibility gate refuses verbs the body lacks, directions it can\'t aim, and tests it can\'t check — with the reason');
+  const c1 = planStore.parseCondition('carrying 4 oak logs');
+  const c2 = planStore.parseCondition('slept through the night');
+  dreamCheck(c1.kind === 'carrying' && c1.n === 4 && c2.timing === 'dawn' && planStore.parseCondition('enclosed at nightfall').timing === 'nightfall',
+    'conditions parse: counts, nightfall tests and dawn tests');
+
+  // A plan that starts by itself when its time comes (a habit), and runs across ticks.
+  goalP('Gather Dirt By Day');
+  planStore.writePlan(vaultPath, { name: 'Gather Dirt', goal: 'Gather Dirt By Day', plan: compiled({ when: 'day', steps: ['dig below', 'place ahead', 'jump'], test: 'carrying dirt' }) });
+  const habit = createPlanRunner({ vaultPath, logDir: planLogDir, now: tickClock });
+  dreamCheck(habit.next(pNight()) === null, 'a day plan does not start itself at night');
+  const hb1 = act(habit, pDay(), okR('breaking the dirt below'));
+  dreamCheck(hb1.type === 'dig' && hb1.at === 'below' && hb1.source === 'plan' && hb1.plan === 'Gather Dirt',
+    'by day, the plan starts by itself and the body digs (source: plan)');
+  const hb2 = act(habit, pDay({ digging: true }), undefined);
+  dreamCheck(hb2.type === 'idle' && hb2.source === 'plan', 'it waits while the hand is still breaking the block');
+  const hb3 = act(habit, pDay(), okR('set dirt down ahead'));
+  const hb4 = act(habit, pDay(), okR('jumped'));
+  dreamCheck(hb3.type === 'place' && hb3.at === 'ahead' && hb4.type === 'jump', 'then the next steps, one per tick, in order');
+  const hb5 = act(habit, pDay(), undefined);
+  dreamCheck(hb5.source !== 'plan' && habit.status().running === null && habit.status().waiting.length === 1,
+    'steps done: the body is released while the test is checked');
+  act(habit, pDay({ inventory: [{ name: 'dirt', count: 2 }] }), undefined);
+  const gd = planData('Gather Dirt');
+  dreamCheck(gd.passed === 1 && gd.runs === 1 && gd.status === 'trying', 'the test came true: the run is graded passed in the plan note');
+  dreamCheck(habit.next(pDay()) === null, 'a plan does not start itself again straight away (once per half day)');
+
+  // Emergencies pause a plan; it resumes.
+  const em = runnerFor({ cooldownMs: 0 });
+  em.start('Gather Dirt');
+  dreamCheck(act(em, pDay(), undefined, true).source !== 'plan', 'an emergency pre-empts the running plan');
+  dreamCheck(em.status().running && em.status().running.paused, '…which waits, paused, not failed');
+  const resumed = act(em, pDay(), okR());
+  dreamCheck(resumed.type === 'dig' && resumed.source === 'plan', 'and resumes where it was when the danger passes');
+  em.stop('sim');
+
+  // A step the body refuses is retried, then the run breaks with the body's reason.
+  goalP('Make A Table');
+  planStore.writePlan(vaultPath, { name: 'Make A Table', goal: 'Make A Table', plan: compiled({ when: 'any', steps: ['craft crafting_table'], test: 'carrying crafting_table' }) });
+  const br = runnerFor();
+  br.start('make a table'); // by name, forgiving case
+  const refuse = { ok: false, reason: 'I lacked what it takes to make a crafting table' };
+  for (let i = 0; i < 3; i += 1) act(br, pDay(), refuse);
+  dreamCheck(br.status().running === null && planData('Make A Table').broke === 1 &&
+    /lacked what it takes/.test(planData('Make A Table').last_reason),
+    'a refused step is retried twice, then the run breaks with the body\'s own reason');
+
+  // until-steps, seeking what isn't in view, and a nightfall test.
+  goalP('Find A Bed Before Dark');
+  planStore.writePlan(vaultPath, { name: 'Bed Before Dark', goal: 'Find A Bed Before Dark', plan: compiled({ when: 'late day', steps: ['explore until near bed 12', 'approach bed'], test: 'near bed at nightfall' }) });
+  const bedRun = runnerFor();
+  bedRun.start('Bed Before Dark');
+  const bedAt = (d) => ({ name: 'red_bed', distance: d, position: new Vec3(d, 64, 0) });
+  const s1 = act(bedRun, pLate(), undefined);
+  const s2 = act(bedRun, pLate({ affordances: { bed: bedAt(8) } }), undefined);
+  dreamCheck(s1.type === 'explore' && s2.type === 'approach' && s2.target.name === 'red_bed',
+    '"explore until near bed": walks until a bed is in view, then goes to it');
+  act(bedRun, pLate({ affordances: { bed: bedAt(2) } }), undefined);
+  dreamCheck(bedRun.status().waiting.some((w) => w.name === 'Bed Before Dark'), 'there: the test waits for nightfall');
+  act(bedRun, pLate({ timeOfDay: 11000, affordances: { bed: bedAt(3) } }), undefined);
+  dreamCheck(planData('Bed Before Dark').passed === 0, '…and is not judged before dark');
+  act(bedRun, pDay({ timeOfDay: 12000, affordances: { bed: bedAt(3) } }), undefined);
+  dreamCheck(planData('Bed Before Dark').passed === 1, 'judged at nightfall: near a bed — passed');
+
+  // A plan still running when dusk comes is judged then, even while the night reflex has the body.
+  const lateRun = runnerFor();
+  lateRun.start('Bed Before Dark');
+  act(lateRun, pLate(), undefined); // exploring, no bed yet
+  lateRun.next(pDay({ timeOfDay: 12000 }), { emergency: true });
+  dreamCheck(lateRun.status().running === null && planData('Bed Before Dark').broke === 1 && planData('Bed Before Dark').passed === 1,
+    'dusk falls mid-plan with steps undone: the run breaks ("the time for it passed"), it is not graded on its test');
+
+  // A dawn test: slept through the night; and a death in the night fails it.
+  goalP('Sleep Through The Night');
+  planStore.writePlan(vaultPath, { name: 'Sleep In A Bed', goal: 'Sleep Through The Night', plan: compiled({ when: 'any', steps: ['use bed'], test: 'slept through the night' }) });
+  const sl = runnerFor();
+  sl.start('Sleep In A Bed');
+  const u1 = act(sl, pNight({ affordances: { bed: bedAt(2) } }), okR('lay down in the red bed'));
+  act(sl, pNight({ sleeping: true }), undefined);
+  act(sl, pNight({ timeOfDay: 20000 }), undefined);
+  act(sl, pDay({ timeOfDay: 100 }), undefined);
+  dreamCheck(u1.type === 'use' && u1.target === 'bed' && planData('Sleep In A Bed').passed === 1, 'use bed, sleep, and at dawn: slept through the night — passed');
+  sl.start('Sleep In A Bed');
+  act(sl, pNight({ affordances: { bed: bedAt(2) } }), okR('lay down in the red bed'));
+  act(sl, pNight(), undefined);
+  sl.noteDeath();
+  act(sl, pDay({ timeOfDay: 100 }), undefined);
+  dreamCheck(planData('Sleep In A Bed').failed === 1 && /died/.test(planData('Sleep In A Bed').last_reason), 'a death in the night fails a dawn test, with the reason');
+
+  // Generate and test: three passes make a Skill.
+  const gr = runnerFor();
+  for (let i = 0; i < 2; i += 1) {
+    gr.start('Gather Dirt');
+    for (const o of [pDay(), pDay(), pDay(), pDay(), pDay({ inventory: [{ name: 'dirt', count: 1 }] })]) act(gr, o, okR());
+  }
+  const skillFile = path.join(vaultPath, 'Concepts/Abstract/Skill/Gather Dirt.md');
+  dreamCheck(planData('Gather Dirt').status === 'skill' && fs.existsSync(skillFile), 'three passes: the plan is promoted to a Skill');
+  const skillNote = fs.readFileSync(skillFile, 'utf8');
+  dreamCheck(/promoted_from: "\[\[Plans\/Gather Dirt\]\]"/.test(skillNote) && /- dig below/.test(skillNote) && /skill\/callable/.test(skillNote),
+    'the Skill note carries its steps, its test and where it came from');
+  dreamCheck(fs.readdirSync(path.join(vaultPath, 'Experiences')).some((f) => f.includes('Learned How To Gather Dirt')), 'and the mind remembers learning it');
+
+  // Three graded runs without a pass: revise; the dream sees why and rewrites it.
+  const rv = runnerFor();
+  for (let i = 0; i < 2; i += 1) { rv.start('Make A Table'); for (let j = 0; j < 3; j += 1) act(rv, pDay(), refuse); }
+  dreamCheck(planData('Make A Table').status === 'revise', 'three runs and never a pass: the plan is marked for revision');
+  const promptWithPlans = buildDreamPromptP(vaultPath);
+  dreamCheck(/Plans that keep failing[\s\S]*Make A Table[\s\S]*lacked what it takes/.test(promptWithPlans) && /How plans work/.test(promptWithPlans),
+    'the next dream is told which plan keeps failing, and why');
+  dreamCheck(rv.start('Make A Table').ok === false, 'a plan waiting to be rethought cannot be run');
+  const revised = applyDreamP(vaultPath, { insights: [], subgoals: [], skills: [], plans: [
+    { revises: 'Make A Table', for_goal: 'Make A Table', when: 'day', steps: ['swingAt tree', 'craft oak_planks', 'craft crafting_table'], test: 'carrying crafting_table' },
+  ] });
+  const mt = planData('Make A Table');
+  dreamCheck(revised.some((w) => w.kind === 'plan' && w.revised) && mt.version === 2 && mt.status === 'trying' &&
+    mt.history.length === 1 && mt.history[0].steps[0] === 'craft crafting_table' && mt.steps.length === 3,
+    'a dream writes version 2; version 1 is kept in history with why it was replaced');
+  // Versions 2 and 3 fail too: dropped, never deleted.
+  for (let v = 0; v < 2; v += 1) {
+    for (let i = 0; i < 3; i += 1) { rv.start('Make A Table'); planStore.recordRun(vaultPath, 'Make A Table', { grade: 'failed', reason: 'no table appeared' }); rv.stop('sim'); }
+    if (v === 0) planStore.revisePlan(vaultPath, 'Make A Table', compiled({ when: 'day', steps: ['craft crafting_table'], test: 'carrying crafting_table' }));
+  }
+  const dropped = planData('Make A Table');
+  dreamCheck(dropped.status === 'dropped' && fs.existsSync(planStore.planPath(vaultPath, 'Make A Table')) && dropped.history.length === 2,
+    'still failing after two revisions: dropped, with its history kept (nothing deleted)');
+
+  // Dreams write plans with new goals and for goals already held.
+  goalP('Carry Wood Before Dusk');
+  const dreamt = applyDreamP(vaultPath, {
+    insights: [], skills: [],
+    subgoals: [{ title: 'Wall Myself In Before Dark', body: 'Walls before night.', plan: { name: 'Wall In', when: 'late day', steps: ['place left', 'place right', 'place ahead', 'place behind'], test: 'enclosed at nightfall' } }],
+    plans: [
+      { for_goal: 'Carry Wood Before Dusk', name: 'Gather Wood', when: 'day', steps: ['approach oak_log', 'dig ahead'], test: 'carrying oak_log 4' },
+      { for_goal: 'A Goal I Never Set', when: 'day', steps: ['jump'], test: 'fed' },
+      { for_goal: 'Carry Wood Before Dusk', when: 'day', steps: ['teleport home'], test: 'fed' },
+    ],
+  });
+  dreamCheck(dreamt.some((w) => w.kind === 'subgoal' && w.title === 'Wall Myself In Before Dark') &&
+    planData('Wall In').serves === '[[Wall Myself In Before Dark]]' && planData('Gather Wood').status === 'trying',
+    'a dreamed goal arrives with its plan, and an old goal gets one');
+  dreamCheck(dreamt.rejected.length === 2 && dreamt.rejected.some((r) => /no goal of mine/.test(r.reason)) && dreamt.rejected.some((r) => /teleport/.test(r.reason)),
+    'plans for unknown goals, or that the body cannot run, are refused and the reason kept for the dream log');
+  dreamCheck(!/Carry Wood Before Dusk/.test((/Goals you hold that have no plan yet:\n([\s\S]*?)\n\n/.exec(buildDreamPromptP(vaultPath)) || [])[1] || ''),
+    'a goal with a plan is no longer listed as needing one');
+
+  // The arbiter: emergencies, then the plan, then Claude; the cortex calls skills by name.
+  const pbb = createBlackboard({});
+  const pr = runnerFor();
+  let cortexSays = { type: 'explore', source: 'claude', thought: 'I want to see the hills', say: 'hello' };
+  const parb = createArbiter({ decide: async () => cortexSays, blackboard: pbb, toAction, planRunner: pr });
+  cortexSays = { type: 'skill', item: 'gather dirt', source: 'claude', thought: 'I know how to do this' };
+  const ps1 = await parb(starving, pDay());
+  dreamCheck(ps1.source === 'plan' && ps1.plan === 'Gather Dirt' && ps1.type === 'dig', 'the cortex calls a skill by name and the body starts on it');
+  pr.afterTick({ action: ps1, result: okR(), observation: pDay() });
+  cortexSays = { type: 'explore', source: 'claude', thought: 'I want to see the hills', say: 'hello' };
+  const ps2 = await parb(starving, pDay());
+  dreamCheck(ps2.source === 'plan' && ps2.thought === 'I want to see the hills' && ps2.say === 'hello' && ps2.overrode === 'explore',
+    'a plan in hand outranks a fresh thought, but keeps the thought and the words');
+  const danger = pDay({ nearestHostile: { name: 'zombie', distance: 3, position: new Vec3(3, 64, 0) } });
+  cortexSays = { type: 'flee', source: 'instinct', target: danger.nearestHostile };
+  const ps3 = await parb(starving, danger);
+  dreamCheck(ps3.type === 'flee' && ps3.source === 'instinct', 'a zombie within reach: the brainstem acts, not the plan');
+  const dusk = pDay({ timeOfDay: 12500 });
+  cortexSays = { type: 'dig', at: 'below', reflex: 'shelter', source: 'instinct' };
+  const ps4 = await parb(starving, dusk);
+  dreamCheck(ps4.reflex === 'shelter', 'from dusk, the night-shelter reflex comes before any plan');
+  cortexSays = { type: 'stop', source: 'claude', thought: 'enough' };
+  await parb(starving, pDay());
+  dreamCheck(pr.status().running === null, 'the cortex can let the running plan go ("stop")');
+  cortexSays = { type: 'skill', item: 'Fly To The Moon', source: 'claude', thought: 'hm' };
+  const ps5 = await parb(starving, pDay());
+  dreamCheck(ps5.type === 'idle' && pr.status().running === null, 'asking for a plan it doesn\'t have does nothing');
+  pbb.post('innerVoice', 'urge', { action: 'skill', item: 'gather dirt', thought: 'maybe' });
+  cortexSays = { type: 'explore', source: 'instinct' };
+  const ps6 = await parb(calmDrives, pDay());
+  dreamCheck(ps6.source !== 'plan' && ps6.type !== 'skill', 'a passing urge cannot call a plan; that is the cortex\'s to do');
+
+  // The cortex's vocabulary and prompt.
+  const skillAct = toAction({ action: 'skill', item: 'Gather Dirt', thought: 'x' }, pDay());
+  dreamCheck(skillAct.type === 'skill' && skillAct.item === 'Gather Dirt' && toAction({ action: 'stop' }, pDay()).type === 'stop',
+    'the cortex may answer "skill" (by name) or "stop"');
+  const pr2 = runnerFor();
+  pr2.start('Wall In');
+  const cortexPrompt = buildPrompt(vaultPath, new Drives(), { ...pLate(), affordances: null, plan: pr2.status() });
+  dreamCheck(/carry out by name[\s\S]*"Gather Dirt" \(a skill I have mastered\)/.test(cortexPrompt) &&
+    /You are carrying out your plan "Wall In" \(step 1 of 4: place left/.test(cortexPrompt),
+    'the cortex sees its skills and plans by name, and the plan its body is in the middle of');
+  pr2.stop('sim');
+  const planLog = fs.readdirSync(planLogDir).filter((f) => f.startsWith('plans-'));
+  const planLines = planLog.length ? fs.readFileSync(path.join(planLogDir, planLog[0]), 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
+  dreamCheck(planLines.length >= 10 && planLines.some((l) => l.grade === 'passed' && l.trace.length >= 3) && planLines.some((l) => l.grade === 'broke' && l.reason),
+    'every run is logged to plans-*.jsonl with its trace, grade and reason');
+  const tickWithPlan = await tick(makeMockBot(), new Drives(), vaultPath, {
+    decide: async () => ({ type: 'jump', source: 'plan', plan: 'Gather Dirt', planRun: 999, planStep: 2 }),
+    planRunner: runnerFor(),
+  });
+  dreamCheck(tickWithPlan.action.plan === 'Gather Dirt', 'the loop carries plan actions through the body and back to the runner');
+  // Strict grading (2026-11-17): a pass must be earned. Live, "near grass"
+  // passed every time and a night plan passed with none of its steps done.
+  goalP('Stand Somewhere Green');
+  planStore.writePlan(vaultPath, { name: 'Stand On Grass', goal: 'Stand Somewhere Green', plan: compiled({ when: 'any', steps: ['jump'], test: 'near grass_block' }) });
+  const onGrass = pDay({ nearbyBlocks: [{ name: 'grass_block', distance: 1, position: new Vec3(0, 63, 0) }] });
+  const strictRun = createPlanRunner({ vaultPath, logDir: planLogDir, now: tickClock, cooldownMs: 0 });
+  const st1 = strictRun.next(onGrass);
+  dreamCheck(!st1 || st1.plan !== 'Stand On Grass', 'a plan whose test is already true does not start itself (nothing to do)');
+  const st2 = strictRun.start('Stand On Grass', 'cortex', onGrass);
+  dreamCheck(!st2.ok && /already so/.test(st2.reason), '…and the cortex is told it is already so');
+  strictRun.stop('sim');
+  goalP('Sink At Dusk');
+  planStore.writePlan(vaultPath, { name: 'Sink At Dusk', goal: 'Sink At Dusk', plan: compiled({ when: 'dusk', steps: ['dig below'], test: 'enclosed at nightfall' }) });
+  const earlyStart = runnerFor().start('Sink At Dusk', 'cortex', pDay());
+  dreamCheck(!earlyStart.ok && /not the time/.test(earlyStart.reason), 'a dusk plan cannot be started by day (it used to skip its steps and be graded anyway)');
+  goalP('Wall Up And Wait');
+  planStore.writePlan(vaultPath, { name: 'Wall Up And Wait', goal: 'Wall Up And Wait', plan: compiled({ when: 'late day', steps: ['jump', 'wait until day'], test: 'enclosed at nightfall' }) });
+  const wwRun = runnerFor();
+  wwRun.start('Wall Up And Wait', 'cortex', pLate());
+  dreamCheck(wwRun.start('Wall Up And Wait', 'cortex', pLate()).already === true, 'calling a plan that is already running changes nothing');
+  act(wwRun, pLate(), okR('jumped'));
+  act(wwRun, pLate(), undefined); // waiting
+  wwRun.next(pDay({ timeOfDay: 12000, affordances: { enclosed: true } }), { emergency: true });
+  dreamCheck(planData('Wall Up And Wait').passed === 1, 'a final "wait until day" counts as done when its time runs out: graded at nightfall (enclosed — passed)');
+  const nightRun = runnerFor();
+  goalP('Last Through The Dark');
+  planStore.writePlan(vaultPath, { name: 'Last Through The Dark', goal: 'Last Through The Dark', plan: compiled({ when: 'night', steps: ['place above', 'wait until day'], test: 'survived the night' }) });
+  nightRun.start('Last Through The Dark', 'cortex', pNight());
+  act(nightRun, pNight(), { ok: false, reason: 'nothing to set' }); act(nightRun, pNight(), { ok: false, reason: 'nothing to set' });
+  nightRun.next(pDay({ timeOfDay: 100 }));
+  act(nightRun, pDay({ timeOfDay: 200 }), undefined);
+  dreamCheck(planData('Last Through The Dark').passed === 0 && planData('Last Through The Dark').broke === 1,
+    'a night plan whose steps were never done does not pass just because the night was survived');
+  const { skillLines: skillLinesP } = require('./vault/dreamStore');
+  const gdSkill = path.join(vaultPath, 'Concepts/Abstract/Skill/Gather Dirt.md');
+  const fmW = require('./vault/frontmatter');
+  const skNote = fmW.parse(fs.readFileSync(gdSkill, 'utf8'));
+  fs.writeFileSync(gdSkill, fmW.stringify({ ...skNote.data, status: 'withdrawn' }, skNote.body));
+  dreamCheck(!/Gather Dirt/.test(skillLinesP(vaultPath) || ''), 'a Skill withdrawn for being earned on an empty test is no longer offered as know-how');
+
+  // ------------------------------- plasticity (design-plasticity-and-a-learning-cortex.md, Part A)
+  console.log('\n=== Plasticity ===');
+  const cs = require('./vault/conceptStore');
+  const plast = require('./vault/plasticity');
+  const fmP = require('./vault/frontmatter');
+  const { lookup } = require('./vault/ontologyMap');
+  const noteOf = (kind, raw) => {
+    const file = paths.conceptPath(vaultPath, lookup(kind, raw).classPath, paths.titleCase(raw));
+    return { file, ...fmP.parse(fs.readFileSync(file, 'utf8')) };
+  };
+  const meet = (raw, others, extra = {}) => cs.recordEncounter(vaultPath, 'entity', raw, { coOccursWith: others, ...extra });
+  meet('sim_fox', ['Sim Hen']); // first meeting: counts extra
+  const w1 = noteOf('entity', 'sim_fox').data.link_strength['Sim Hen'];
+  meet('sim_fox', ['Sim Hen']);
+  const w2 = noteOf('entity', 'sim_fox').data.link_strength['Sim Hen'];
+  for (let i = 0; i < 20; i += 1) meet('sim_fox', ['Sim Hen']);
+  const w22 = noteOf('entity', 'sim_fox').data.link_strength['Sim Hen'];
+  meet('sim_fox', ['Sim Hen']);
+  const w23 = noteOf('entity', 'sim_fox').data.link_strength['Sim Hen'];
+  dreamCheck(w1 > 0 && w2 > w1 && w22 > w2 && w22 < 1 && (w23 - w22) < (w2 - w1),
+    'links strengthen each time two things are seen together, with diminishing returns (Hebb)');
+  meet('sim_owl', ['Sim Mouse']); meet('sim_owl', ['Sim Mouse']);
+  const ordinary = noteOf('entity', 'sim_owl').data.link_strength['Sim Mouse'];
+  meet('sim_cat', ['Sim Mouse']); meet('sim_cat', ['Sim Mouse'], { salience: 3 });
+  const salient = noteOf('entity', 'sim_cat').data.link_strength['Sim Mouse'];
+  dreamCheck(salient > ordinary, 'a moment that matters (hurt, eating) links what was seen more strongly');
+  dreamCheck(cs.learningRate(1) === 0.5 && cs.learningRate(100) === 0.05 && cs.learningRate(4) === 0.25,
+    'familiar things change slowly: the learning rate falls from 0.5 (new) to 0.05 (met a hundred times)');
+  meet('sim_wolf', []); // new: met once
+  const veteran = noteOf('entity', 'sim_wolf');
+  fs.writeFileSync(veteran.file, fmP.stringify({ ...veteran.data, encounter_count: 200 }, veteran.body));
+  meet('sim_bear', []);
+  const fearBefore = (raw) => noteOf('entity', raw).data.fear_weight;
+  const wolf0 = fearBefore('sim_wolf'); const bear0 = fearBefore('sim_bear');
+  meet('sim_wolf', [], { tookDamage: true }); meet('sim_bear', [], { tookDamage: true });
+  dreamCheck(fearBefore('sim_bear') - bear0 > 5 * (fearBefore('sim_wolf') - wolf0),
+    'one bite moves the fear of a new creature far more than of one met two hundred times');
+
+  // Sleep: replay, downscale, prune.
+  const fox = noteOf('entity', 'sim_fox');
+  fs.writeFileSync(fox.file, fmP.stringify({ ...fox.data, link_strength: { ...fox.data.link_strength, 'Sim Pebble': 0.032 },
+    co_occurs_with: [...fox.data.co_occurs_with, '[[Sim Pebble]]', '[[Sim Old Friend]]'] }, fox.body));
+  const owlBefore = noteOf('entity', 'sim_owl').data.link_strength['Sim Mouse'];
+  const foxBefore = noteOf('entity', 'sim_fox').data.link_strength['Sim Hen'];
+  const sleepStats = plast.consolidate(vaultPath, { replay: new Set(['Sim Fox', 'Sim Hen']) });
+  const foxAfter = noteOf('entity', 'sim_fox').data;
+  const owlAfter = noteOf('entity', 'sim_owl').data.link_strength['Sim Mouse'];
+  dreamCheck(foxAfter.link_strength['Sim Hen'] > foxBefore * plast.DOWNSCALE && Math.abs(owlAfter - owlBefore * plast.DOWNSCALE) < 0.002,
+    'sleep replays what the day\'s memories involved (strengthened) and weakens every other link a little');
+  dreamCheck(!foxAfter.link_strength['Sim Pebble'] && !foxAfter.co_occurs_with.includes('[[Sim Pebble]]') && foxAfter.faded_links['Sim Pebble'],
+    'a link that falls too low fades: off the graph, archived under faded_links (not deleted)');
+  dreamCheck(foxAfter.link_strength['Sim Old Friend'] === Math.round(plast.UNKNOWN_STRENGTH * plast.DOWNSCALE * 1000) / 1000,
+    'links from before strengths existed start at a modest strength and are kept for now');
+  dreamCheck(sleepStats.pruned >= 1 && sleepStats.replayed >= 1 && sleepStats.links > 0, 'sleep reports what it replayed, kept and let fade');
+  meet('sim_fox', ['Sim Pebble']);
+  const backAgain = noteOf('entity', 'sim_fox').data;
+  dreamCheck(backAgain.link_strength['Sim Pebble'] > 0 && backAgain.co_occurs_with.includes('[[Sim Pebble]]') && !(backAgain.faded_links || {})['Sim Pebble'],
+    'meeting the two together again brings a faded link back');
+  const replayed = plast.replayedSince(vaultPath, new Date(0));
+  dreamCheck(replayed.size > 0, 'the things the day\'s Experiences involved are found for replay');
+
+  // Spreading activation.
+  for (let i = 0; i < 8; i += 1) meet('sim_fox', ['Sim Hen', 'Sim Den']);
+  const recall = plast.callsToMind(vaultPath, ['Sim Fox']);
+  dreamCheck(/Sim Fox brings to mind Sim Hen/.test(recall || '') && !/\d/.test(recall), 'what is in view calls its strongest links to mind, in words');
+  dreamCheck(!/Sim Hen/.test(plast.callsToMind(vaultPath, ['Sim Fox', 'Sim Hen']) || ''), 'what is already in view is not "called to mind"');
+  const foxObs = { ...calmObs, affordances: null, nearbyEntities: [{ name: 'sim_fox', distance: 4, position: new Vec3(4, 64, 0) }] };
+  dreamCheck(/What this calls to mind[\s\S]*Sim Fox brings to mind Sim Hen/.test(buildPrompt(vaultPath, new Drives(), foxObs)),
+    'the cortex is told what the things in view call to mind');
+  dreamCheck(/What goes together most in your memory:/.test(buildDreamPromptP(vaultPath)), 'the dream sees what goes together most in its memory');
+  let slept = null;
+  const { createDreamer: createDreamerP } = require('./reflection/dream');
+  const sleeper = createDreamerP({ vaultPath, ask: async () => '{"insights":[],"subgoals":[],"skills":[],"plans":[]}', onSleep: (st) => { slept = st; } });
+  await sleeper.dreamNow('sim');
+  dreamCheck(slept && Number.isFinite(slept.links), 'every dream begins with sleep: links are consolidated before dreaming');
+
+  // ------------------------------- B1: experience export and the eval's split
+  const { buildExamples, situationText } = require('./tools/experienceExport');
+  const { split: splitEx, isHard } = require('./tools/cortexEval');
+  const tB1 = Date.parse('2026-11-17T12:00:00Z');
+  const tk = (i, extra = {}) => ({ ts: new Date(tB1 + i * 1500).toISOString(), health: 20, food: 15, isDay: true,
+    aff: { sky: true, walls: 0, enclosed: false, blocks: 1 }, hostiles: [], action: { type: 'explore', source: 'instinct' }, result: null, tookDamage: false, ...extra });
+  const safeRun = Array.from({ length: 30 }, (_, i) => tk(i));
+  const exA = buildExamples(safeRun);
+  dreamCheck(exA.length === 1 && exA[0].label === 'good' && exA[0].action === 'explore',
+    'an act carried out with nothing hurting afterwards is a "good" example (one per run of the same act, not one per tick)');
+  const hurtRun = Array.from({ length: 30 }, (_, i) => tk(i, { health: i < 5 ? 20 : 12, tookDamage: i === 5,
+    action: { type: 'dig', at: 'below', source: 'claude' }, hostiles: [{ name: 'zombie', d: 3 }] }));
+  const exB = buildExamples(hurtRun);
+  dreamCheck(exB[0].label === 'bad' && exB[0].action === 'dig below' && /lost 8 health/.test(exB[0].why), 'losing health soon after makes it a "bad" example, with the reason');
+  const exC = buildExamples(safeRun, [tB1 + 10 * 1500]);
+  dreamCheck(exC[0].label === 'bad' && /died/.test(exC[0].why), 'a death soon after makes it "bad"');
+  const exD = buildExamples([tk(0, { result: { ok: false, reason: 'there was only air under me' }, action: { type: 'dig', at: 'below' } }), ...safeRun.slice(1)]);
+  dreamCheck(exD[0].label === 'bad' && /only air/.test(exD[0].why), 'an act the body refused is "bad"');
+  dreamCheck(/Hostile: zombie at 3/.test(situationText(hurtRun[0])) && isHard({ hostileNear: true, isDay: true, situation: '' }),
+    'the situation is told in plain words, and a hostile close by marks a hard moment');
+  const sp = splitEx([{ ts: '2026-11-16T10:00:00Z' }, { ts: '2026-11-17T10:00:00Z' }, { ts: '2026-11-17T11:00:00Z' }]);
+  dreamCheck(sp.testDay === '2026-11-17' && sp.test.length === 2 && sp.earlier.length === 1, 'the test set is held out by time: the latest day');
+
 
   console.log('\n=== Sample notes ===');
   const sampleStrategy = rates.sort((a, b) => a.rate - b.rate)[0];

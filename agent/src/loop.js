@@ -179,6 +179,11 @@ async function tick(bot, drives, vaultPath, opts = {}) {
   // Phase 2: survival reflexes ride on the observation so every caller of the
   // rule layer (instinct, the Claude layer's fallback) gets them.
   if (opts.reflexes) observation.reflexes = opts.reflexes;
+  // The plan in hand (brain/planRunner.js), so the cortex can see what its
+  // body is in the middle of.
+  if (opts.planRunner) {
+    try { observation.plan = opts.planRunner.status(); } catch (_) { /* never */ }
+  }
   const gut = bb ? bb.get('gut', 10000) : null;
   if (bb) {
     observation.workspace = workspaceDigest(bb);
@@ -200,6 +205,12 @@ async function tick(bot, drives, vaultPath, opts = {}) {
     result = { ok: false, reason: `something went wrong in my body (${String(err && err.message || err).slice(0, 60)})` };
   }
   if (result) action.result = result;
+  // The plan runner learns how its step went (and grades waiting tests).
+  if (opts.planRunner) {
+    try {
+      opts.planRunner.afterTick({ action, result, observation, now });
+    } catch (_) { /* a plan must never break the tick */ }
+  }
 
   // Post what this tick saw and did, and let the body's regions fire.
   if (bb) {
@@ -243,6 +254,10 @@ async function tick(bot, drives, vaultPath, opts = {}) {
 
   // Record encounters. Damage is attributed to hostile entities close enough
   // to plausibly have caused it.
+  // How much this moment matters, for how strongly what is seen together
+  // gets linked (Part A of docs/design-plasticity-and-a-learning-cortex.md):
+  // hurt, or eating, makes the moment stick.
+  const tickSalience = 1 + (tookDamage ? 2 : 0) + (action.type === 'eat' && result && result.ok ? 2 : 0);
   const results = [];
   for (const thing of noticed) {
     const title = titleCase(thing.name);
@@ -253,6 +268,7 @@ async function tick(bot, drives, vaultPath, opts = {}) {
       tookDamage: blamed,
       locatedIn,
       coOccursWith: allTitles.filter((t) => t !== title),
+      salience: tickSalience + (blamed ? 2 : 0),
     });
     results.push({ ...result, blamed });
   }

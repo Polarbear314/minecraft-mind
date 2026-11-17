@@ -21,7 +21,9 @@ const { onExperience } = require('./vault/experienceLog');
 const { ensureInheritance } = require('./vault/inheritance');
 const { createReflexes } = require('./decision/reflexes');
 const { createRcon } = require('./brain/rcon');
-const { createWorldGrowth } = require('./brain/worldGrowth');
+const path = require('path');
+const { createWorldGrowth, advancementsFile, earnedAdvancements } = require('./brain/worldGrowth');
+const { createPlanRunner } = require('./brain/planRunner');
 
 // The brain map (agent/brain-map.json): which mind runs each brain region.
 const brain = loadBrainMap();
@@ -44,6 +46,13 @@ const growth = nature.growth && config.rcon.password
     vaultPath: config.vaultPath,
     rcon: createRcon({ port: config.rcon.port, password: config.rcon.password }),
     startSize: nature.startBorder || 128,
+    // The world grows for real advancements (the server's own record of them),
+    // not for surviving nights. SERVER_DIR overrides the repo's server/ folder.
+    readEarned: () => {
+      const serverDir = (process.env.SERVER_DIR || '').trim() || path.resolve(__dirname, '..', '..', 'server');
+      const file = advancementsFile(serverDir, config.username);
+      return file ? earnedAdvancements(file) : null;
+    },
   })
   : null;
 if (nature.growth && !growth) console.log('[mind] World growth is on but RCON_PASSWORD is not set in agent/.env: the border will not grow.');
@@ -77,8 +86,13 @@ const llmDecideFn =
 
 // The arbiter: each tick the body acts on brainstem emergencies first, then
 // Claude's plan, then the inner voice's fresh urge, then plain instinct.
+// Plans (docs/design-plans-and-skills.md): dreamed goals come with a program
+// of the body's own primitives and a test; the runner carries one across ticks.
+const planRunner = claudeMode && nature.plans !== false
+  ? createPlanRunner({ vaultPath: config.vaultPath, logDir: config.decisionLogDir, blackboard })
+  : null;
 const decideFn = claudeMode && llmDecideFn
-  ? createArbiter({ decide: llmDecideFn, blackboard, toAction })
+  ? createArbiter({ decide: llmDecideFn, blackboard, toAction, planRunner })
   : llmDecideFn;
 
 // Always-on regions on the local model, each its own loop (brain/regions.js).
@@ -103,6 +117,10 @@ const dreamer = dreamProvider
     intervalMs: config.dreamIntervalMs,
     minNewExperiences: brain.hippocampus.minNewExperiences || 0,
     logDir: config.decisionLogDir,
+    onSleep: (s) => {
+      blackboard.fire('hippocampus', `slept: replayed ${s.replayed} links, ${s.links} kept, ${s.pruned} faded`);
+      console.log(`[sleep] replayed ${s.replayed} links, kept ${s.links}, ${s.pruned} faded${s.prunedLinks.length ? ` (e.g. ${s.prunedLinks.slice(0, 3).join('; ')})` : ''}`);
+    },
     onDream: ({ by, written }) => blackboard.fire('hippocampus',
       `dreamed (${by}): ${written.map((w) => w.title).join('; ') || 'nothing new'}`),
   })
@@ -162,6 +180,7 @@ const journal = createBodyJournal({
 bot.on('death', () => {
   console.log('[mind] Died.');
   journal.noteDeath(new Date());
+  if (planRunner) planRunner.noteDeath();
 });
 
 bot.once('spawn', () => {
@@ -172,7 +191,7 @@ bot.once('spawn', () => {
   if (claudeMode) {
     console.log(`[mind] Brain map: ${describeBrain(brain)}`);
     if (!brain.local.model) console.log('[mind] No local model set (LOCAL_MODEL / brain-map.json): when Claude rests, dreaming waits.');
-    console.log(`[mind] Nature: born knowing ${nature.bornKnowing ? 'on' : 'off'} · reflexes ${reflexes ? 'on' : 'off'} · world growth ${growth ? `on (${growth.state().size} blocks, ${growth.state().streak}/3 nights)` : 'off'}`);
+    console.log(`[mind] Nature: born knowing ${nature.bornKnowing ? 'on' : 'off'} · reflexes ${reflexes ? 'on' : 'off'} · world growth ${growth ? `on (${growth.state().size} blocks, grows on new advancements)` : 'off'} · plans ${planRunner ? 'on' : 'off'}`);
     console.log(`[mind] Decision log: ${config.decisionLogDir || 'off'}`);
   }
 
@@ -206,7 +225,7 @@ bot.once('spawn', () => {
     if (thinking) return; // don't overlap slow ticks
     thinking = true;
     try {
-      const summary = await tick(bot, drives, config.vaultPath, { decide: decideFn, dreamer, chat, observer, journal, blackboard, reflexes, bornKnowing: !!nature.bornKnowing });
+      const summary = await tick(bot, drives, config.vaultPath, { decide: decideFn, dreamer, chat, observer, journal, blackboard, reflexes, planRunner, bornKnowing: !!nature.bornKnowing });
       const d = summary.drives;
       const act = summary.action;
       const res = act.result && act.result.ok === false ? ` (couldn't: ${act.result.reason})` : '';
@@ -214,6 +233,7 @@ bot.once('spawn', () => {
         `[tick] ${act.type}${act.at ? ` ${act.at}` : ''}${res} | hunger ${Math.round(d.hunger)} fear ${Math.round(d.fear)} ` +
         `curiosity ${Math.round(d.curiosity)} | ${summary.results.length} encounters` +
         (summary.newConceptCount ? ` (${summary.newConceptCount} new)` : '') +
+        (summary.action.plan ? ` | plan "${summary.action.plan}" step ${summary.action.planStep + 1}` : '') +
         (summary.action.thought ? ` | "${summary.action.thought}"` : '') +
         (summary.action.say ? ` | says: "${summary.action.say}"` : '')
       );

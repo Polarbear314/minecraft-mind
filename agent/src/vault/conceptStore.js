@@ -7,7 +7,24 @@ const fm = require('./frontmatter');
 const paths = require('./paths');
 const { lookup } = require('./ontologyMap');
 
-const ALPHA = 0.2; // EMA: new = old * (1 - ALPHA) + event * ALPHA
+const ALPHA = 0.2; // the old fixed EMA rate (kept for reference; see learningRate)
+
+// Plasticity (docs/design-plasticity-and-a-learning-cortex.md, Part A).
+// Familiar things change slowly: a first meeting moves the feelings a lot,
+// the thousandth barely at all.
+const ALPHA_MIN = 0.05;
+function learningRate(encountersSoFar) {
+  return Math.max(ALPHA_MIN, 0.5 / Math.sqrt(Math.max(1, encountersSoFar)));
+}
+// Links strengthen with use (Hebb), with diminishing returns: each tick two
+// things are perceived together, w += HEBB * (1 - w). Moments that matter
+// (damage, eating, a first meeting) count several times over.
+const HEBB = 0.05;
+const NEW_LINK = HEBB; // a link's strength after one ordinary co-occurrence
+function strengthen(w, times = 1) {
+  const old = Number.isFinite(Number(w)) ? Number(w) : 0;
+  return round3(1 - (1 - old) * Math.pow(1 - HEBB, Math.max(1, times)));
+}
 
 function clamp(v, lo, hi) {
   return Math.min(hi, Math.max(lo, v));
@@ -17,9 +34,9 @@ function round3(v) {
   return Math.round(v * 1000) / 1000;
 }
 
-function ema(oldValue, eventValue) {
+function ema(oldValue, eventValue, alpha = ALPHA) {
   const old = Number.isFinite(oldValue) ? oldValue : 0;
-  return old * (1 - ALPHA) + eventValue * ALPHA;
+  return old * (1 - alpha) + eventValue * alpha;
 }
 
 /**
@@ -64,6 +81,7 @@ function mergeLinks(existing, additions) {
  *   tookDamage: boolean,        // damage attributed to this thing -> fear event 1.0
  *   locatedIn: [title, ...],    // location note titles
  *   coOccursWith: [title, ...], // other concept titles seen this tick
+ *   salience: number,           // how much this moment matters (1 ordinary; more for damage, eating, firsts)
  * }
  *
  * Returns { title, isFirstEncounter, valence, band, crossedBand, classPath, file }
@@ -109,10 +127,11 @@ function recordEncounter(vaultPath, kind, rawName, opts = {}) {
       (opts.tookDamage ? ' The first meeting hurt.' : '');
   } else {
     ({ data, body } = fm.parse(fs.readFileSync(file, 'utf8')));
+    const alpha = learningRate(Number(data.encounter_count) || 1);
     weights = {
-      fear: ema(data.fear_weight, event.fear),
-      hunger: ema(data.hunger_weight, event.hunger),
-      curiosity: ema(data.curiosity_weight, event.curiosity),
+      fear: ema(data.fear_weight, event.fear, alpha),
+      hunger: ema(data.hunger_weight, event.hunger, alpha),
+      curiosity: ema(data.curiosity_weight, event.curiosity, alpha),
     };
     count = (Number(data.encounter_count) || 0) + 1;
     first = data.first_encountered || now;
@@ -146,6 +165,20 @@ function recordEncounter(vaultPath, kind, rawName, opts = {}) {
   if (locatedIn.length) newData.located_in = locatedIn;
   const coOccurs = mergeLinks(data.co_occurs_with, opts.coOccursWith);
   if (coOccurs.length) newData.co_occurs_with = coOccurs;
+  // Link strengths beside the plain list (Obsidian draws the graph from the list).
+  if (opts.coOccursWith && opts.coOccursWith.length) {
+    const strength = { ...(data.link_strength || {}) };
+    const faded = { ...(data.faded_links || {}) };
+    const times = Math.max(1, Math.round(Number(opts.salience) || 1)) + (isFirst ? 2 : 0); // a first meeting sticks
+    for (const other of opts.coOccursWith) {
+      if (!other) continue;
+      strength[other] = strengthen(strength[other], times);
+      delete faded[other]; // met again: a faded link comes back
+    }
+    newData.link_strength = strength;
+    if (Object.keys(faded).length) newData.faded_links = faded;
+    else delete newData.faded_links;
+  }
 
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, fm.stringify(newData, body), 'utf8');
@@ -174,4 +207,4 @@ function ensureLocation(vaultPath, rawName, className = 'Biome') {
   return title;
 }
 
-module.exports = { recordEncounter, ensureLocation, computeValence, valenceBand, ALPHA };
+module.exports = { recordEncounter, ensureLocation, computeValence, valenceBand, ALPHA, learningRate, strengthen, HEBB, NEW_LINK };

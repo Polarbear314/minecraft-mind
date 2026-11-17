@@ -21,6 +21,8 @@ const { DIRECTION_NAMES, MOVE_DIRECTIONS, normalizeDirection } = require('../act
 const { describeAffordances } = require('../perception/affordances');
 const { gapLines } = require('../vault/gapStore');
 const { inheritanceLines } = require('../vault/inheritance');
+const { callableLines } = require('../vault/planStore');
+const { callsToMind } = require('../vault/plasticity');
 
 const VALID_ACTIONS = new Set([
   'flee', 'avoid', 'eat', 'seekFood', 'explore', 'idle',
@@ -35,6 +37,9 @@ const VALID_ACTIONS = new Set([
   'move', 'jump', 'use', 'equip',
   // Phase 2 (born knowing how things are made): craft a named thing.
   'craft',
+  // Plans and skills (docs/design-plans-and-skills.md): call one by name, or
+  // let the running one go.
+  'skill', 'stop',
 ]);
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const TIMEOUT_MS = 10000;
@@ -53,7 +58,9 @@ const SYSTEM_PROMPT =
   'equip (hold one of the things you carry, named in "item"), ' +
   'craft (make something from what you carry, named in "item" — some things need a crafting table close by), ' +
   'pickup (go to the nearest thing lying on the ground), approach (walk toward a creature or person ' +
-  'you can see — name which one in "target", otherwise the nearest is chosen). ' +
+  'you can see — name which one in "target", otherwise the nearest is chosen), ' +
+  'skill (carry out one of your own plans or skills, named in "item" — your body then keeps at it step by step ' +
+  'until it is done), stop (let go of the plan you are carrying out). ' +
   `"at" is relative to your own body: ${DIRECTION_NAMES.join(', ')} ` +
   '("below" is the block under your feet, "above" the block over your head, "-up" is head height, ' +
   '"-down" is the ground beside you). ' +
@@ -78,7 +85,7 @@ const SYSTEM_PROMPT =
   '"say": "<optional: words to speak aloud in chat>", ' +
   '"target": "<optional, for approach/swingAt: which creature or person; for use: what kind of block>", ' +
   '"at": "<optional, for dig/place/move/use: a direction relative to your body>", ' +
-  '"item": "<optional, for eat/place/equip: which carried thing; for craft: what to make>"}';
+  '"item": "<optional, for eat/place/equip: which carried thing; for craft: what to make; for skill: which plan or skill>"}';
 
 function readNote(file) {
   try {
@@ -187,6 +194,18 @@ ${observation.workspace}` : null;
     '',
     'What you feel about what is around you (from your own memory):',
     feelings(vaultPath, observation),
+    (() => {
+      // Spreading activation: what the things in view call to mind (their strongest links).
+      const inView = [
+        ...(observation.nearbyEntities || []).map((e) => paths.titleCase(e.name)),
+        ...(observation.nearbyBlocks || []).map((b) => paths.titleCase(b.name)),
+        ...(observation.nearbyItems || []).map((i) => paths.titleCase(i.name)),
+      ];
+      const recall = inView.length ? callsToMind(vaultPath, inView) : null;
+      return recall ? `
+What this calls to mind (what has come together with these in your life):
+${recall}` : null;
+    })(),
     '',
     (() => {
       return observation.chatLines
@@ -208,6 +227,17 @@ ${born}
     (() => {
       const skills = skillLines(vaultPath);
       return skills ? `What you know how to do (know-how earned through your own repeated success):\n${skills}\n` : null;
+    })(),
+    (() => {
+      const plans = callableLines(vaultPath);
+      return plans ? `Plans and skills of your own you can carry out by name (action "skill"):\n${plans}\n` : null;
+    })(),
+    (() => {
+      const p = observation.plan;
+      if (!p || !p.running) return null;
+      const r = p.running;
+      return `You are carrying out your plan "${r.name}" (step ${r.step} of ${r.of}: ${r.doing}; it worked if ${r.test}). ` +
+        'Your body keeps at it on its own; choose "stop" to let it go, or another skill to turn to that instead.\n';
     })(),
     (() => {
       const mem = recentMemories(vaultPath);
@@ -349,6 +379,10 @@ function toAction(parsed, observation) {
     else if (parsed.target) action.target = String(parsed.target).toLowerCase().replace(/\s+/g, '_');
   }
   if (type === 'craft') action.item = String(parsed.item || parsed.target || '').toLowerCase().replace(/\s+/g, '_') || undefined;
+  if (type === 'skill') {
+    action.item = String(parsed.item || parsed.target || '').trim().slice(0, 80);
+    if (!action.item) throw new Error('skill without a name');
+  }
   if (type === 'equip') action.item = String(parsed.item || parsed.target || '').toLowerCase().replace(/\s+/g, '_');
   if (type === 'pickup') action.target = observation.nearbyItems[0];
   if (type === 'approach') {

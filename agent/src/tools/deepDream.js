@@ -25,6 +25,9 @@ const VAULT = (process.env.VAULT_PATH || '').trim();
 const LOGS = path.resolve(__dirname, '..', '..', '..', 'logs');
 const MODEL = process.argv[2] || 'opus';
 const MAX_NOTES = 6;
+const MAX_PLANS = 8; // plans for goals already held (docs/design-plans-and-skills.md)
+const planStore = require('../vault/planStore');
+const { listSubgoals } = require('../vault/goalStore');
 
 const words = (s, n) => String(s || '').trim().replace(/\s+/g, ' ').slice(0, n);
 const noNumbers = (s) => String(s).split(/(?<=[.!?])\s+/).filter((x) => !/\d+\s*%/.test(x)).join(' ');
@@ -114,11 +117,30 @@ function buildPrompt() {
     'once). Do not repeat beliefs, goals or skills you already hold. Ground insights and skills in the memories that ',
     'taught them, using their EXACT titles in learned_from. Titles are short Title Case phrases.',
     '',
+    'A goal is only words until your body can carry it out. Give every new subgoal a "plan", and in "plans" write ',
+    `plans (at most ${MAX_PLANS}) for goals you already hold that have none yet — the ones that matter most to you — `,
+    'or a better version of a plan that keeps failing ("revises": "<its name>"). Plans do not count toward your notes. ',
+    `How plans work: ${planStore.PLAN_LANGUAGE}`,
+    '',
     'Respond with ONLY a JSON object: {"reflection": "...", "food": "...", "night": "...", "unknown": "...", ',
     '"revised": "...", "insights": [{"title": "...", "body": "...", "learned_from": ["..."]}], ',
-    '"subgoals": [{"title": "...", "body": "..."}], "skills": [{"title": "...", "body": "...", "learned_from": ["..."]}]}',
+    '"subgoals": [{"title": "...", "body": "...", "plan": {"name": "...", "when": "...", "needs": [], "steps": ["..."], "test": "..."}}], ',
+    '"skills": [{"title": "...", "body": "...", "learned_from": ["..."]}], ',
+    '"plans": [{"for_goal": "<exact title of one of your goals>", "name": "...", "when": "...", "needs": [], "steps": ["..."], "test": "..."}]}',
     '',
     `Your goals:\n${goals || '(none)'}`,
+    '',
+    (() => {
+      const planned = planStore.goalsWithPlans(VAULT);
+      const unplanned = listSubgoals(VAULT).filter((g) => !planned.has(g.title)).map((g) => `- ${g.title}`).join('\n');
+      const p = planStore.dreamPlanLines(VAULT);
+      return [
+        `Goals you hold that have no plan yet:\n${unplanned || '(none)'}`,
+        p.trying ? `\nPlans you are trying, and how they have gone:\n${p.trying}` : '',
+        p.revise ? `\nPlans that keep failing, and why:\n${p.revise}` : '',
+        p.dropped ? `\nPlans you gave up on:\n${p.dropped}` : '',
+      ].join('\n');
+    })(),
     '',
     `Beliefs you already hold:\n${notesOf(listInsights(VAULT))}`,
     '',
@@ -153,14 +175,20 @@ async function main() {
   const parsed = JSON.parse(text.slice(a, b + 1));
   const now = new Date();
   const dreamedBy = `${by} (deep dream)`;
-  const written = applyDream(VAULT, parsed, now, dreamedBy, MAX_NOTES);
+  const written = applyDream(VAULT, parsed, now, dreamedBy, MAX_NOTES, MAX_PLANS);
+  const rejectedPlans = written.rejected || [];
 
   // The report, in the vault where it can be read in Obsidian.
-  const date = now.toISOString().slice(0, 10);
-  const reportFile = path.join(VAULT, 'Dreams', `Deep Dream ${date}.md`);
+  // One report per deep dream, never replacing an earlier one: named by local
+  // date and time ("Deep Dream 2026-11-17 1021"), with a suffix if that's taken.
+  const pad = (n) => String(n).padStart(2, '0');
+  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const stamp = `${date} ${pad(now.getHours())}${pad(now.getMinutes())}`;
+  let reportFile = path.join(VAULT, 'Dreams', `Deep Dream ${stamp}.md`);
+  for (let i = 2; fs.existsSync(reportFile); i += 1) reportFile = path.join(VAULT, 'Dreams', `Deep Dream ${stamp} (${i}).md`);
   fs.mkdirSync(path.dirname(reportFile), { recursive: true });
   const body = [
-    `# Deep Dream, ${date}`,
+    `# Deep Dream, ${stamp.replace(/ (\d\d)(\d\d)$/, ' at $1:$2')}`,
     '',
     String(parsed.reflection || '').trim(),
     '',
@@ -177,7 +205,8 @@ async function main() {
     String(parsed.revised || '').trim(),
     '',
     '## What I wrote down',
-    written.length ? written.map((w) => `- ${w.kind}: [[${w.title}]]`).join('\n') : '- nothing new',
+    written.length ? written.map((w) => `- ${w.kind}: [[${w.title}]]${w.goal ? ` (for [[${w.goal}]])` : ''}`).join('\n') : '- nothing new',
+    ...(rejectedPlans.length ? ['', '## Plans my body could not carry out', ...rejectedPlans.map((r) => `- ${r.plan}: ${r.reason}`)] : []),
   ].join('\n');
   fs.writeFileSync(reportFile, fm.stringify({
     is_a: fm.link('Deep Dream'), dreamed_by: dreamedBy, dreamed_on: now.toISOString(),
@@ -186,7 +215,7 @@ async function main() {
 
   fs.mkdirSync(LOGS, { recursive: true });
   const logFile = path.join(LOGS, `deepdream-${now.toISOString().replace(/[:.]/g, '-')}.json`);
-  fs.writeFileSync(logFile, JSON.stringify({ by, seconds: Math.round((Date.now() - started) / 1000), prompt, raw: text, parsed, written }, null, 2));
+  fs.writeFileSync(logFile, JSON.stringify({ by, seconds: Math.round((Date.now() - started) / 1000), prompt, raw: text, parsed, written, rejectedPlans }, null, 2));
 
   console.log(`[deep dream] done in ${Math.round((Date.now() - started) / 1000)}s by ${by}; wrote ${written.length} note(s).`);
   console.log(`[deep dream] report: ${reportFile}`);

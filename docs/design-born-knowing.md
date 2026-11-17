@@ -55,11 +55,11 @@ Everything else stays the founding goal's to answer: where it settles, what it b
 
 ## 3. A world that grows as it thrives
 
-The terrarium border expands as MindBot proves it can live:
+The terrarium border expands as MindBot makes real advancements:
 
-- **Criterion:** 3 nights in a row survived (graded nights with no death).
-- **Growth:** the border doubles — 128 → 256 → 512 → 1024 — then is removed (the full world).
-- **How:** the agent asks the server through **RCON** (the server's remote-console port, enabled on 127.0.0.1 only with a local password). The *mind* never touches this; the body journal checks the criterion at each dawn and the code issues `worldborder set <size>`. The growth is written to the vault as an Experience ("The World Grew Wider"), and the border reflex follows the new edge automatically.
+- **Criterion (since 2026-11-16):** a **new Minecraft advancement** earned since the last growth: the game's own record of milestones such as making a crafting table, mining stone, or sleeping in a bed. Recipe unlocks don't count, since picking things up unlocks them. Surviving the night is neither needed nor enough. *(Until then the criterion was 3 nights survived in a row. That grew the border 128 → 256 on 2026-11-17, but it rewarded hiding in a hole, which the reflexes already do.)*
+- **Growth:** the border doubles — 128 → 256 → 512 → 1024 — then is removed (the full world). One doubling per dawn, however many new advancements came in that day.
+- **How:** at each graded dawn the agent asks the server through **RCON** (the server's remote-console port, enabled on 127.0.0.1 only with a local password) to `save-all`. It then reads the bot's file in `server/<level-name>/advancements/<uuid>.json`, compares it with the advancements already credited in `State/World.md`, and if something is new issues `worldborder set <size>`. The first dawn under this rule only records what was already earned (two starting ones: "adventure" and "husbandry"). The *mind* never touches this. The growth is written to the vault as an Experience ("The World Grew Wider", naming what it did), and the border reflex follows the new edge automatically.
 - **Shrinking:** never. A bad stretch after growth does not take the world back.
 
 ## 4. Build order

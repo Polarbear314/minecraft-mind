@@ -20,8 +20,12 @@ const { writeInsight, writeSkill, listInsights, listSkills } = require('../vault
 const { askClaudeCli } = require('../decision/claudeCodeDecide');
 const { appendJsonLine } = require('../decision/decisionLog');
 const { inheritanceLines } = require('../vault/inheritance');
+const planStore = require('../vault/planStore');
+const plasticity = require('../vault/plasticity');
+const { listSubgoals } = require('../vault/goalStore');
 
 const MAX_NOTES_PER_DREAM = 3;
+const MAX_PLANS = 2; // plans for goals already held (or revisions), per dream
 const DREAM_EXPERIENCES = 15; // recent memories shown; small local models degrade on long prompts
 const MAX_LEARNED_FROM = 5;
 const MAX_TITLE_LENGTH = 60;
@@ -166,8 +170,14 @@ const DREAM_PROMPT =
   'Respond with ONLY a JSON object, no other text: ' +
   '{"insights": [{"title": "...", "body": "...", "learned_from": ["<exact experience title>"]}], ' +
   '"subgoals": [{"title": "...", "body": "..."}], ' +
-  '"skills": [{"title": "...", "body": "...", "learned_from": ["<exact experience title>"]}]} ' +
-  '(each array may be empty).';
+  '"skills": [{"title": "...", "body": "...", "learned_from": ["<exact experience title>"]}], ' +
+  '"plans": [{"for_goal": "<exact title of one of your goals>", "name": "<short Title Case name>", "when": "...", "needs": [], "steps": ["..."], "test": "..."}]} ' +
+  '(each array may be empty). ' +
+  'A goal is only words until your body can carry it out. So with every subgoal, also give a "plan" ' +
+  '({"name", "when", "needs", "steps", "test"}) — how your body will do it and how you will know it worked. ' +
+  `You may also write up to ${MAX_PLANS} plans in "plans" for goals you already hold that have no plan yet, ` +
+  'or a better version of a plan that keeps failing (give "revises": "<its name>"). ' +
+  'Plans do not count toward your notes.';
 
 // The same shape as JSON Schema, for minds that can be held to it (the local
 // model via Ollama's structured output). Claude just follows the prompt.
@@ -180,17 +190,37 @@ const NOTE_WITH_SOURCES = {
   },
   required: ['title', 'body', 'learned_from'],
 };
+const PLAN_FIELDS = {
+  name: { type: 'string' },
+  when: { type: 'string', enum: ['day', 'late day', 'dusk', 'night', 'any'] },
+  needs: { type: 'array', items: { type: 'string' } },
+  steps: { type: 'array', items: { type: 'string' } },
+  test: { type: 'string' },
+};
+const PLAN_SCHEMA = { type: 'object', properties: PLAN_FIELDS, required: ['when', 'steps', 'test'] };
 const DREAM_SCHEMA = {
   type: 'object',
   properties: {
     insights: { type: 'array', items: NOTE_WITH_SOURCES },
     subgoals: {
       type: 'array',
-      items: { type: 'object', properties: { title: { type: 'string' }, body: { type: 'string' } }, required: ['title', 'body'] },
+      items: {
+        type: 'object',
+        properties: { title: { type: 'string' }, body: { type: 'string' }, plan: PLAN_SCHEMA },
+        required: ['title', 'body', 'plan'],
+      },
     },
     skills: { type: 'array', items: NOTE_WITH_SOURCES },
+    plans: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { for_goal: { type: 'string' }, revises: { type: 'string' }, ...PLAN_FIELDS },
+        required: ['for_goal', 'when', 'steps', 'test'],
+      },
+    },
   },
-  required: ['insights', 'subgoals', 'skills'],
+  required: ['insights', 'subgoals', 'skills', 'plans'],
 };
 
 /** Assemble everything the dream is allowed to see. Vault only — no game. */
@@ -204,6 +234,9 @@ function buildDreamPrompt(vaultPath, { experiences: nExperiences = DREAM_EXPERIE
   const strategies = strategyLines(vaultPath, 12);
   const concepts = strongestConceptLines(vaultPath);
   const experiences = recentExperienceLines(vaultPath, nExperiences);
+  const planned = planStore.goalsWithPlans(vaultPath);
+  const unplanned = listSubgoals(vaultPath).filter((g) => !planned.has(g.title)).map((g) => `- ${g.title}`).join('\n');
+  const planLines = planStore.dreamPlanLines(vaultPath);
   return [
     DREAM_PROMPT,
     '',
@@ -222,11 +255,23 @@ ${born}
     'What you feel most strongly about:',
     concepts || '(nothing yet)',
     '',
+    (() => {
+      const links = plasticity.strongestLinkLines(vaultPath);
+      return links ? `What goes together most in your memory:
+${links}
+` : null;
+    })(),
     'Your recent memories (exact titles, for learned_from):',
     experiences || '(none yet)',
     '',
     insights ? `Insights you already hold (do not repeat):\n${insights}\n` : null,
     skills ? `Skills you already know (do not repeat):\n${skills}\n` : null,
+    `How plans work: ${planStore.PLAN_LANGUAGE}`,
+    '',
+    unplanned ? `Goals you hold that have no plan yet:\n${unplanned}\n` : null,
+    planLines.trying ? `Plans you are trying, and how they have gone:\n${planLines.trying}\n` : null,
+    planLines.revise ? `Plans that keep failing, and why (write a better version with "revises"):\n${planLines.revise}\n` : null,
+    planLines.dropped ? `Plans you gave up on:\n${planLines.dropped}\n` : null,
     'Dream.',
   ].filter((l) => l !== null).join('\n');
 }
@@ -241,7 +286,7 @@ ${born}
  * dreamedBy ("claude:opus", "local:qwen3:14b") is stamped on every note, so
  * the vault shows which mind learned what.
  */
-function applyDream(vaultPath, parsed, timestamp = new Date(), dreamedBy = null, maxNotes = MAX_NOTES_PER_DREAM) {
+function applyDream(vaultPath, parsed, timestamp = new Date(), dreamedBy = null, maxNotes = MAX_NOTES_PER_DREAM, maxPlans = MAX_PLANS) {
   const written = [];
   if (!parsed || typeof parsed !== 'object') return written;
   const titles = experienceTitles(vaultPath);
@@ -256,6 +301,8 @@ function applyDream(vaultPath, parsed, timestamp = new Date(), dreamedBy = null,
   const asArray = (v) => (Array.isArray(v) ? v : []);
   const cleanTitle = (t) => paths.sanitize(String(t || '')).slice(0, MAX_TITLE_LENGTH).trim();
 
+  const planned = [];
+  const rejected = [];
   const queue = [
     ...asArray(parsed.insights).map((n) => ({ kind: 'insight', note: n })),
     ...asArray(parsed.subgoals).map((n) => ({ kind: 'subgoal', note: n })),
@@ -274,6 +321,12 @@ function applyDream(vaultPath, parsed, timestamp = new Date(), dreamedBy = null,
       } else if (kind === 'subgoal') {
         if (founding && title !== founding) {
           result = writeSubgoal(vaultPath, { title, body, servesTitle: founding, timestamp, dreamedBy });
+          // The goal's plan, through the feasibility gate.
+          if (result && note.plan) {
+            const p = applyPlan(vaultPath, { ...note.plan, for_goal: result.title }, timestamp, dreamedBy, true);
+            if (p.written) planned.push(p.written);
+            if (p.rejected) rejected.push(p.rejected);
+          }
         }
       } else if (kind === 'skill') {
         // A skill is remembered know-how: it must come from real experience.
@@ -283,7 +336,47 @@ function applyDream(vaultPath, parsed, timestamp = new Date(), dreamedBy = null,
       if (result) written.push({ kind, title: result.title });
     } catch (_) { /* one bad note must not spoil the dream */ }
   }
+
+  // Plans for goals already held, and revisions of failing plans.
+  let extra = 0;
+  for (const raw of asArray(parsed.plans)) {
+    if (extra >= maxPlans) break;
+    try {
+      const p = applyPlan(vaultPath, raw, timestamp, dreamedBy, false);
+      if (p.written) { planned.push(p.written); extra += 1; }
+      if (p.rejected) rejected.push(p.rejected);
+    } catch (_) { /* one bad plan must not spoil the dream */ }
+  }
+  written.push(...planned);
+  // Plans that didn't pass the feasibility gate, and why (for the dream log).
+  Object.defineProperty(written, 'rejected', { value: rejected, enumerable: false });
   return written;
+}
+
+/**
+ * One dreamed plan through the feasibility gate into Plans/. `fresh` = the
+ * plan of a subgoal just written. Returns { written } or { rejected }.
+ */
+function applyPlan(vaultPath, raw, timestamp, dreamedBy, fresh) {
+  if (!raw || typeof raw !== 'object') return {};
+  const compiled = planStore.compilePlan(raw);
+  const goal = paths.sanitize(String(raw.for_goal || '')).trim();
+  const label = String(raw.name || raw.revises || goal || 'a plan').slice(0, MAX_TITLE_LENGTH);
+  if (!compiled.ok) return { rejected: { plan: label, goal, reason: compiled.reason } };
+  if (raw.revises) {
+    const r = planStore.revisePlan(vaultPath, String(raw.revises), compiled.plan, timestamp, dreamedBy);
+    return r ? { written: { kind: 'plan', title: r.title, revised: true, goal } }
+      : { rejected: { plan: label, goal, reason: 'there was no plan of that name waiting to be rethought' } };
+  }
+  const goals = new Set(listSubgoals(vaultPath).map((g) => g.title));
+  if (!goals.has(goal)) return { rejected: { plan: label, goal, reason: 'no goal of mine has that name' } };
+  if (!fresh && planStore.goalsWithPlans(vaultPath).has(goal)) {
+    return { rejected: { plan: label, goal, reason: 'that goal already has a plan' } };
+  }
+  const name = paths.sanitize(String(raw.name || goal)).slice(0, MAX_TITLE_LENGTH).trim() || goal;
+  const w = planStore.writePlan(vaultPath, { name, goal, plan: compiled.plan, timestamp, dreamedBy });
+  return w ? { written: { kind: 'plan', title: w.title, goal } }
+    : { rejected: { plan: label, goal, reason: 'a plan of that name already exists' } };
 }
 
 // --------------------------------------------------------------- the dreamer
@@ -309,7 +402,7 @@ function proposedCount(parsed) {
  *   neither       — `claude -p --model <model>` like the decision layer.
  * opts.logDir: write logs/dreams-YYYY-MM-DD.jsonl (prompt, reply, outcome).
  */
-function createDreamer({ vaultPath, model, intervalMs = 0, ask, provider, minNewExperiences = 0, logDir = null, onDream = null }) {
+function createDreamer({ vaultPath, model, intervalMs = 0, ask, provider, minNewExperiences = 0, logDir = null, onDream = null, onSleep = null }) {
   const think = provider
     ? (prompt) => provider.ask(prompt, { schema: DREAM_SCHEMA })
     : async (prompt) => ({
@@ -320,6 +413,7 @@ function createDreamer({ vaultPath, model, intervalMs = 0, ask, provider, minNew
   let lastDream = Date.now(); // boot counts as a dream: no dreaming on wake-up
   let experiencesAtLastDream = experienceTitles(vaultPath).length;
   let busy = false;
+  let lastSlept = Date.now(); // links are consolidated over what was lived since
 
   function log(entry) {
     if (logDir) appendJsonLine(logDir, 'dreams', entry);
@@ -327,6 +421,14 @@ function createDreamer({ vaultPath, model, intervalMs = 0, ask, provider, minNew
 
   async function dream(reason) {
     const startedAt = Date.now();
+    // Sleep first: replay what mattered, weaken everything a little, let
+    // unused links fade (vault/plasticity.js). Then dream over the result.
+    let sleep = null;
+    try {
+      sleep = plasticity.consolidate(vaultPath, { replay: plasticity.replayedSince(vaultPath, new Date(lastSlept)), now: new Date() });
+      lastSlept = startedAt;
+      if (onSleep) onSleep(sleep);
+    } catch (_) { /* a bad night's sleep must not stop the dream */ }
     const prompt = buildDreamPrompt(vaultPath);
     let reply = null;
     try {
@@ -340,7 +442,7 @@ function createDreamer({ vaultPath, model, intervalMs = 0, ask, provider, minNew
       experiencesAtLastDream = experienceTitles(vaultPath).length;
       log({
         ts: new Date(startedAt).toISOString(), reason, by: reply.by, latencyMs: Date.now() - startedAt,
-        prompt, raw, proposed: proposedCount(parsed), written, outcome: 'ok',
+        prompt, raw, proposed: proposedCount(parsed), written, rejectedPlans: written.rejected || [], sleep, outcome: 'ok',
       });
       try { if (onDream) onDream({ reason, by: reply.by, written }); } catch (_) { /* never */ }
       if (written.length) {
@@ -379,6 +481,6 @@ function createDreamer({ vaultPath, model, intervalMs = 0, ask, provider, minNew
 }
 
 module.exports = {
-  createDreamer, buildDreamPrompt, applyDream, resolveExperienceLink, experienceTitles,
+  createDreamer, buildDreamPrompt, applyDream, applyPlan, resolveExperienceLink, experienceTitles,
   recentExperienceLines, strongestConceptLines, DREAM_PROMPT, DREAM_SCHEMA,
 };

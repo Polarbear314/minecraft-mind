@@ -9,7 +9,9 @@
     "bakeoff": "node src/tools/dreamBakeoff.js",
     "brain": "node src/tools/brainView.js",
     "deepdream": "node src/tools/deepDream.js",
-    "sayvsdo": "node src/tools/sayVsDo.js"
+    "sayvsdo": "node src/tools/sayVsDo.js",
+    "export": "node src/tools/experienceExport.js",
+    "cortexeval": "node src/tools/cortexEval.js"
   },
   "license": "MIT",
   "dependencies": {
