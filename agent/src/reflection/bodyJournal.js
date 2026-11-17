@@ -107,6 +107,8 @@ function createBodyJournal({ vaultPath, logDir = null, hostileRange = 10, onNigh
         // the hour, the non-hostile company, and what is carried.
         tod: o.timeOfDay != null ? Math.round(o.timeOfDay) : null,
         near: (o.nearbyEntities || []).filter((e) => !e.hostile).slice(0, 4).map((e) => ({ name: e.name, d: e.distance })),
+        crops: (o.nearbyCrops || []).slice(0, 4).map((c) => ({ name: c.name, ripe: c.ripe, d: c.distance })),
+        foodCarried: (o.inventoryFood || []).reduce((n, i) => n + (i.count || 1), 0),
         inv: (o.inventory || []).slice(0, 8).map((i) => `${i.name} x${i.count}`).join(', ') || null,
         border: o.borderDistance,
         aff: a ? {
@@ -114,7 +116,7 @@ function createBodyJournal({ vaultPath, logDir = null, hostileRange = 10, onNigh
           door: a.door ? a.door.distance : null, bed: a.bed ? a.bed.distance : null, blocks: a.placeable.length,
         } : null,
         hostiles,
-        action: { type: action.type, at: action.at || null, source: action.source || null, ...(action.plan ? { plan: action.plan } : {}) },
+        action: { type: action.type, at: action.at || null, source: action.source || null, ...(action.plan ? { plan: action.plan } : {}), ...(action.layer ? { layer: action.layer, voices: action.voices || [] } : {}) },
         result: action.result || null,
         tookDamage: !!tookDamage,
         drives: drives || null,

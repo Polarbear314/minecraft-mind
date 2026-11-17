@@ -59,6 +59,13 @@ const FOOD_ANIMALS = ['cow', 'pig', 'sheep', 'chicken', 'rabbit', 'mooshroom'];
 /** Drops of those animals worth gathering. */
 const MEAT_DROPS = ['beef', 'porkchop', 'chicken', 'mutton', 'rabbit'];
 
+/** Crops, as blocks, with the age at which they are ripe (2026-11-17: the bot
+ * walked past carrots and wheat because crops weren't something it could see). */
+const CROPS = { wheat: 7, carrots: 7, potatoes: 7, beetroots: 3 };
+
+/** What crops (and animals) leave on the ground that is worth picking up. */
+const FOOD_DROPS = [...MEAT_DROPS, 'wheat', 'carrot', 'potato', 'beetroot', 'apple', 'sweet_berries'];
+
 /** Write any inheritance note that is missing. Never overwrites. Returns titles written. */
 function ensureInheritance(vaultPath, timestamp = new Date()) {
   const written = [];
@@ -96,4 +103,4 @@ function inheritanceLines(vaultPath) {
   return lines.length ? lines.join('\n') : null;
 }
 
-module.exports = { ensureInheritance, inheritanceLines, EDIBLE_BY_NATURE, FOOD_ANIMALS, MEAT_DROPS, NOTES, DIR };
+module.exports = { ensureInheritance, inheritanceLines, EDIBLE_BY_NATURE, FOOD_ANIMALS, MEAT_DROPS, CROPS, FOOD_DROPS, NOTES, DIR };

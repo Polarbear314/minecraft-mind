@@ -34,6 +34,10 @@ const config = {
   // 'rules' (default), 'llm' (Anthropic API, needs ANTHROPIC_API_KEY), or
   // 'claude-code' (Claude Code CLI, uses your Claude account login — no key).
   decisionMode: (process.env.DECISION_MODE || 'rules').trim(),
+  // How the mind is organised: 'regions' (default: brain regions, Claude as
+  // the cortex by day) or 'layers' (a behaviour stack after Brooks, no Claude
+  // by day; docs/design-subsumption.md). Dreaming works the same in both.
+  mind: ((process.env.MIND || 'regions').trim().toLowerCase() === 'layers') ? 'layers' : 'regions',
   anthropicKey: process.env.ANTHROPIC_API_KEY ? process.env.ANTHROPIC_API_KEY.trim() : null,
   llmModel: (process.env.LLM_MODEL || 'claude-haiku-4-5').trim(),
   // Dreaming is rare and benefits most from deeper reasoning, so it can run on

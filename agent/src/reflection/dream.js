@@ -22,6 +22,7 @@ const { appendJsonLine } = require('../decision/decisionLog');
 const { inheritanceLines } = require('../vault/inheritance');
 const planStore = require('../vault/planStore');
 const plasticity = require('../vault/plasticity');
+const memory = require('../vault/memory');
 const { listSubgoals } = require('../vault/goalStore');
 
 const MAX_NOTES_PER_DREAM = 3;
@@ -425,7 +426,11 @@ function createDreamer({ vaultPath, model, intervalMs = 0, ask, provider, minNew
     // unused links fade (vault/plasticity.js). Then dream over the result.
     let sleep = null;
     try {
-      sleep = plasticity.consolidate(vaultPath, { replay: plasticity.replayedSince(vaultPath, new Date(lastSlept)), now: new Date() });
+      const replay = plasticity.replayedSince(vaultPath, new Date(lastSlept));
+      sleep = plasticity.consolidate(vaultPath, { replay, now: new Date() });
+      // Forgetting (stage 2): Experiences fade, the faded fold into gists and
+      // move to Archive/ (vault/memory.js).
+      try { sleep.memory = memory.forget(vaultPath, { replay, now: new Date() }); } catch (_) { /* keep every memory tonight */ }
       lastSlept = startedAt;
       if (onSleep) onSleep(sleep);
     } catch (_) { /* a bad night's sleep must not stop the dream */ }

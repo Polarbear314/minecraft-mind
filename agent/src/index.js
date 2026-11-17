@@ -16,6 +16,7 @@ const { textAsk, localProvider } = require('./brain/providers');
 const { createBlackboard } = require('./brain/blackboard');
 const { createAmygdala, createInnerVoice, createRumination } = require('./brain/regions');
 const { createArbiter } = require('./brain/arbiter');
+const { createLayerStack } = require('./brain/layers');
 const { toAction } = require('./decision/llmDecide');
 const { onExperience } = require('./vault/experienceLog');
 const { ensureInheritance } = require('./vault/inheritance');
@@ -28,6 +29,8 @@ const { createPlanRunner } = require('./brain/planRunner');
 // The brain map (agent/brain-map.json): which mind runs each brain region.
 const brain = loadBrainMap();
 const claudeMode = config.decisionMode === 'claude-code';
+// MIND=layers: the behaviour stack decides by day; Claude only dreams.
+const layersMode = config.mind === 'layers';
 
 // The blackboard every region reads and writes, all at once (brain/blackboard.js).
 // It also writes logs/brain-live.json every second for the brain view.
@@ -61,8 +64,9 @@ onExperience((title) => blackboard.fire('temporal', `remembered: ${title}`));
 
 // Claude decision layers: 'llm' calls the API each tick; 'claude-code' shells
 // out to the Claude Code CLI (account login, no API key) with a throttle.
-const llmDecideFn =
-  config.decisionMode === 'llm'
+const llmDecideFn = layersMode
+  ? undefined
+  : config.decisionMode === 'llm'
     ? createLlmDecide({ apiKey: config.anthropicKey, model: config.llmModel, vaultPath: config.vaultPath })
     : claudeMode
       ? createClaudeCodeDecide({
@@ -88,18 +92,21 @@ const llmDecideFn =
 // Claude's plan, then the inner voice's fresh urge, then plain instinct.
 // Plans (docs/design-plans-and-skills.md): dreamed goals come with a program
 // of the body's own primitives and a test; the runner carries one across ticks.
-const planRunner = claudeMode && nature.plans !== false
+const planRunner = (claudeMode || layersMode) && nature.plans !== false
   ? createPlanRunner({ vaultPath: config.vaultPath, logDir: config.decisionLogDir, blackboard })
   : null;
-const decideFn = claudeMode && llmDecideFn
-  ? createArbiter({ decide: llmDecideFn, blackboard, toAction, planRunner })
-  : llmDecideFn;
+const decideFn = layersMode
+  ? createLayerStack({ planRunner, blackboard })
+  : claudeMode && llmDecideFn
+    ? createArbiter({ decide: llmDecideFn, blackboard, toAction, planRunner })
+    : llmDecideFn;
+if (layersMode) console.log('[mind] MIND=layers: the behaviour stack decides (survive > make > shelter > gather > forage > wander); Claude only dreams.');
 
 // Always-on regions on the local model, each its own loop (brain/regions.js).
 const localMind = brain.local && brain.local.model
   ? localProvider({ model: brain.local.model, host: brain.local.host, timeoutMs: 60000 })
   : null;
-const alwaysOn = claudeMode && localMind ? [
+const alwaysOn = claudeMode && !layersMode && localMind ? [
   createAmygdala({ provider: localMind, blackboard, vaultPath: config.vaultPath, everyMs: brain.amygdala.everyMs }),
   createInnerVoice({ provider: localMind, blackboard, vaultPath: config.vaultPath, everyMs: brain.innerVoice.everyMs }),
   createRumination({ provider: localMind, blackboard, vaultPath: config.vaultPath, everyMs: brain.rumination.everyMs }),
@@ -120,6 +127,7 @@ const dreamer = dreamProvider
     onSleep: (s) => {
       blackboard.fire('hippocampus', `slept: replayed ${s.replayed} links, ${s.links} kept, ${s.pruned} faded`);
       console.log(`[sleep] replayed ${s.replayed} links, kept ${s.links}, ${s.pruned} faded${s.prunedLinks.length ? ` (e.g. ${s.prunedLinks.slice(0, 3).join('; ')})` : ''}`);
+      if (s.memory) console.log(`[sleep] memory: ${s.memory.live} live Experiences, ${s.memory.archived} folded into gists and archived${s.memory.gists.length ? ` (${s.memory.gists.slice(0, 4).join('; ')})` : ''}`);
     },
     onDream: ({ by, written }) => blackboard.fire('hippocampus',
       `dreamed (${by}): ${written.map((w) => w.title).join('; ') || 'nothing new'}`),
@@ -230,7 +238,7 @@ bot.once('spawn', () => {
       const act = summary.action;
       const res = act.result && act.result.ok === false ? ` (couldn't: ${act.result.reason})` : '';
       console.log(
-        `[tick] ${act.type}${act.at ? ` ${act.at}` : ''}${res} | hunger ${Math.round(d.hunger)} fear ${Math.round(d.fear)} ` +
+        `[tick] ${act.layer ? `${act.layer}: ` : ''}${act.type}${act.at ? ` ${act.at}` : ''}${act.item ? ` ${act.item}` : ''}${res} | hunger ${Math.round(d.hunger)} fear ${Math.round(d.fear)} ` +
         `curiosity ${Math.round(d.curiosity)} | ${summary.results.length} encounters` +
         (summary.newConceptCount ? ` (${summary.newConceptCount} new)` : '') +
         (summary.action.plan ? ` | plan "${summary.action.plan}" step ${summary.action.planStep + 1}` : '') +

@@ -2,7 +2,34 @@
 
 *From a conversation with the course professor (2026-11-17): organise MindBot by **behaviours** stacked in layers (Rodney Brooks's subsumption architecture), not by brain regions; make the layers small models that can learn; make dreaming the only way they learn; and measure how behaviour changes from day to day.*
 
-*Status: approved in outline, nothing built yet. Second draft, 2026-11-17.*
+*Status: approved in outline. Second draft, 2026-11-17.*
+
+**Stage 1 built (2026-11-17).** `agent/src/brain/layers.js`: the six layers, hand-written from today's reflexes and instinct. Each tick every layer proposes or stays quiet; the first in the order Survive, Make, Shelter, Gather, Forage, Wander that speaks wins. One wire across layers: while Survive acts, or Shelter holds the body in the evening, Make is inhibited and a running plan pauses. Turn it on with `MIND=layers` in `agent/.env` (keep `DECISION_MODE=claude-code` so dreaming still runs). In this mode Claude is not consulted by day and the Gemma regions don't run; `MIND=regions` (the default) is unchanged. Every tick's log entry (`logs/ticks-*.jsonl`) now carries `layer` (who was in control) and `voices` (every layer that spoke), and the console shows `[tick] gather: dig …`. `npm run sim`: 257 checks (15 new). Running live since 2026-11-17.
+
+*First live day (809 ticks), and what it fixed:*
+- **Plans never advanced.** The stack relabelled plan steps `layer:make`, and the plan runner only advances steps labelled `plan`. Make jumped 233 ticks on step 1 of "Climb Out Onto Grass" and Gather (speaking 307 times) never got the body. Fixed: plan steps keep their label; plans now pass.
+- **Survive fled too much** (84 ticks, a quarter of them from hostiles 11–16 blocks away): fear now sends it running only from a hostile within 10 blocks.
+- **A plan kept a starving body busy** (hunger 90 while a plan explored): urgent hunger now inhibits Make, like Survive and night-time Shelter.
+- **Night went well:** Shelter dug in, sealed the roof, and held the body enclosed for 401 ticks.
+
+**Stage 2 built (2026-11-17).** `agent/src/vault/memory.js`:
+- **Weights:** every note's `weight` (0–1); notes without one start from what they already say (`initialWeight`).
+- **Index and retrieval:** `createMemory()` keeps every note in memory, re-reading only files that changed; `retrieve(question, { layer })` ranks by similarity × weight × recency, with each layer's job added to the question. Similarity is word overlap (TF-IDF) by default, or embeddings when `EMBED_MODEL` (e.g. `nomic-embed-text`) is set in `agent/.env` and pulled in Ollama; embeddings are cached in `logs/memory-embeddings.json`. `npm run recall -- "<situation>" --layer shelter` shows what a layer would remember. No layer reads notes yet: the stage 1 layers are hand-written; the 3B/4B layers (stage 6) will.
+- **Forgetting** (`forget()`, run at every sleep after link consolidation, `reflection/dream.js`): Experiences over a day old fade (×0.85, ×0.92 if they felt good or bad; pulled back if what they involved was met again). Below 0.08, or the weakest while live memory is over its budget of 300, they are folded into a gist note in `Gists/` (tally of how often, how it went, links to the episodes; tentative under 3 episodes) and moved to `Archive/Experiences/` with when and why. At most 100 leave per sleep. `restore()` brings one back. Gists are written from the tally for now; having Opus write them is part of stage 5.
+- *On the live vault:* about 760 Experiences against a budget of 300, so the first few sleeps each archive 100 until it settles. The `[sleep] memory:` log line reports it.
+- `npm run sim`: 270 checks (13 new).
+
+**Food fixes (2026-11-17, after day 2 starved).** The bot walked past carrots, wheat and animals.
+- *Hunting worked* (a pig killed, three porkchops eaten), but at hunger 55 a plan pulled it away from two more pigs, and for most of the day there were no animals about: only 4 cows and a chicken within 100 blocks. Farm animals barely respawn, so a 128-block world runs out.
+- *Crops were invisible:* not in the blocks the body scans. Now `loop.js` scans crops within 16 blocks with how ripe they are (`nearbyCrops`), and whether a crafting table is in reach (`tableNear`).
+- *Forage* picks up food lying about, harvests ripe crops, hunts; and when fed but carrying under 4 bites, it takes food in reach by day with no hostile near.
+- *A new wire:* food in reach while carrying little inhibits Make (a plan pauses) and quiets Gather.
+- *Make* bakes bread from 3 wheat: it uses a crafting table in reach, sets down a carried one, or makes one.
+- Ticks now log `crops` in view and `foodCarried`.
+- Not done: replanting. Harvested crops don't come back unless replanted, so food will still run out over many days.
+- `npm run sim`: 283 checks (10 new).
+
+**Stage 3 built (2026-11-17).** `npm run days` (`agent/src/tools/days.js`) cuts the whole tick log into Minecraft days (at dawn, or where the bot was off for 10+ minutes) and measures each: distance, area, deaths, ticks hurt, average food, starving ticks, ate, hunted, harvested, broke, made, share of the night enclosed, and the share of ticks each layer was in control. Writes `logs/days.json` and `docs/results-days.md` (a table and sparkline trends). First run: 38 days of MindBot's life (30 full), the first 35 in the region design. `npm run sim`: 284 checks.
 
 ## What changed since the first draft
 

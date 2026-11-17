@@ -1620,6 +1620,173 @@ async function main() {
   dreamCheck(sp.testDay === '2026-11-17' && sp.test.length === 2 && sp.earlier.length === 1, 'the test set is held out by time: the latest day');
 
 
+  // ---- The behaviour stack (MIND=layers; docs/design-subsumption.md, stage 1)
+  console.log('\n=== Behaviour stack ===');
+  const { createLayerStack, ORDER: LAYER_ORDER } = require('./brain/layers');
+  const lDrives = (over = {}) => ({ fear: 0, hunger: 0, curiosity: 50, ...over, dominant() { return 'curiosity'; } });
+  const lAff = (over = {}) => ({ enclosed: false, roof: false, canDigBelow: true, canDig: ['ahead', 'below'], canPlace: [], placeable: [], ...over });
+  const lObs = (over = {}) => ({ isDay: true, timeOfDay: 3000, health: 20, borderDistance: 40, position: { x: 0, y: 64, z: 0 },
+    nearbyEntities: [], nearestHostile: null, nearbyItems: [], nearbyBlocks: [], inventory: [], inventoryFood: [], inedible: [],
+    affordances: lAff(), ...over });
+  const calm = createLayerStack({ random: () => 0.99 });
+  dreamCheck(LAYER_ORDER[0] === 'survive' && LAYER_ORDER[LAYER_ORDER.length - 1] === 'wander', 'the stack runs survive first and wander last');
+  const lBorder = calm(lDrives({ hunger: 60 }), lObs({ borderDistance: 2 }));
+  dreamCheck(lBorder.layer === 'survive' && lBorder.type === 'returnInside' && lBorder.voices.includes('forage'),
+    'at the border Survive wins, and the layers it overrode are logged as voices');
+  const lCreeperObs = lObs({ nearbyEntities: [{ name: 'creeper', distance: 5, position: { x: 5, y: 64, z: 0 } }] });
+  const lCreeper = calm(lDrives(), lCreeperObs);
+  dreamCheck(lCreeper.layer === 'survive' && lCreeper.type === 'flee', 'a creeper close by: Survive flees');
+  const lDusk = calm(lDrives(), lObs({ isDay: true, timeOfDay: 12500 }));
+  dreamCheck(lDusk.layer === 'shelter' && lDusk.type === 'dig' && lDusk.at === 'below', 'at dusk, out in the open, Shelter digs in');
+  const lHome = calm(lDrives(), lObs({ isDay: false, timeOfDay: 18000, affordances: lAff({ enclosed: true, roof: true }) }));
+  dreamCheck(lHome.layer === 'shelter' && lHome.type === 'idle', 'closed in at night, Shelter keeps it there');
+  const lLogBlock = { name: 'oak_log', distance: 6, position: { x: 6, y: 64, z: 0 } };
+  const lGather = calm(lDrives(), lObs({ nearbyBlocks: [lLogBlock] }));
+  dreamCheck(lGather.layer === 'gather' && lGather.type === 'dig' && lGather.target === lLogBlock, 'by day, fed and safe, Gather breaks wood');
+  const lHungryGather = calm(lDrives({ hunger: 60 }), lObs({ nearbyBlocks: [lLogBlock], inventoryFood: [{ name: 'bread' }], inventory: [{ name: 'bread', count: 1 }] }));
+  dreamCheck(lHungryGather.layer === 'forage' && lHungryGather.type === 'eat', 'hungry: Gather goes quiet and Forage eats');
+  const lStarving = calm(lDrives({ hunger: 90 }), lObs({ inventoryFood: [{ name: 'bread' }], inventory: [{ name: 'bread', count: 1 }] }));
+  dreamCheck(lStarving.layer === 'survive' && lStarving.type === 'eat', 'starving with food in hand: Survive eats');
+  dreamCheck(calm(lDrives({ hunger: 60 }), lObs()).type === 'seekFood', 'hungry with nothing to eat or hunt: Forage goes looking');
+  const lWander = calm(lDrives(), lObs({ affordances: lAff({ canDig: [] }) }));
+  dreamCheck(lWander.layer === 'wander' && lWander.type === 'explore', 'nothing else to do: Wander explores');
+  const lFar = calm(lDrives({ fear: 80 }), lObs({ nearestHostile: { name: 'zombie', distance: 15 }, affordances: lAff({ canDig: [] }) }));
+  const lNear = calm(lDrives({ fear: 80 }), lObs({ nearestHostile: { name: 'zombie', distance: 6 } }));
+  dreamCheck(lFar.layer !== 'survive' && lNear.layer === 'survive' && lNear.type === 'flee', 'fear flees a hostile close by, not one far off');
+  const salty = createLayerStack({ random: () => 0 });
+  const lFiddle = salty(lDrives(), lObs({ affordances: lAff({ canDig: [] }) }));
+  dreamCheck(lFiddle.layer === 'wander' && lFiddle.type !== 'explore', 'Wander keeps its salt: sometimes it fiddles instead');
+  let lClock = 100000;
+  const maker = createLayerStack({ random: () => 0.99, now: () => lClock });
+  const lMake = maker(lDrives(), lObs({ inventory: [{ name: 'birch_log', count: 3 }] }));
+  dreamCheck(lMake.layer === 'make' && lMake.type === 'craft' && lMake.item === 'birch_planks', 'carrying logs: Make turns them into planks');
+  lClock += 1000;
+  dreamCheck(createLayerStack({ random: () => 0.99 })(lDrives(), lObs({ inventory: [{ name: 'stripped_oak_log', count: 1 }] })).item === 'oak_planks', 'a stripped log still makes plain planks');
+  dreamCheck(maker(lDrives(), lObs({ inventory: [{ name: 'birch_log', count: 3 }] })).layer !== 'make', 'Make rests between makings');
+  const lSeen = [];
+  const lPlans = { next: (o, { emergency }) => { lSeen.push(emergency); return emergency ? null : { type: 'move', at: 'ahead', plan: 'Walk Ahead' }; } };
+  const planned = createLayerStack({ planRunner: lPlans, random: () => 0.99 });
+  const lByDay = planned(lDrives(), lObs({ nearbyBlocks: [lLogBlock] }));
+  const lByDusk = planned(lDrives(), lObs({ timeOfDay: 12500 }));
+  dreamCheck(lByDay.layer === 'make' && lByDay.plan === 'Walk Ahead' && lByDay.source !== 'layer:make' && lByDay.voices.includes('gather') &&
+    lByDusk.layer === 'shelter' && lSeen[0] === false && lSeen[1] === true,
+    'a running plan is Make\'s by day; at dusk Shelter inhibits it and the plan pauses');
+  const lStarvingPlan = planned(lDrives({ hunger: 90 }), lObs());
+  dreamCheck(lStarvingPlan.layer === 'forage' && lSeen[lSeen.length - 1] === true, 'starving: Make gives way (the plan pauses) and Forage goes for food');
+  const lBot = makeWorldBot();
+  const lTick = await tick(lBot, new Drives(), vaultPath, { decide: createLayerStack({ random: () => 0.99 }) });
+  dreamCheck(LAYER_ORDER.includes(lTick.action.layer) && Array.isArray(lTick.action.voices) && /^layer:/.test(lTick.action.source),
+    'a full tick through the loop carries the controlling layer and the voices');
+  // ---- Food (2026-11-17: it walked past cows, carrots and wheat, and starved)
+  console.log('\n=== Food ===');
+  const { scanCrops } = require('./loop');
+  const fCow = { name: 'cow', distance: 6, position: { x: 6, y: 64, z: 0 } };
+  const fSeen = [];
+  const fPlans = { next: (o, { emergency }) => { fSeen.push(emergency); return emergency ? null : { type: 'explore', plan: 'Some Project' }; } };
+  const fStack = createLayerStack({ planRunner: fPlans, random: () => 0.99 });
+  const fFedCow = fStack(lDrives({ hunger: 10 }), lObs({ nearbyEntities: [fCow], nearbyBlocks: [lLogBlock] }));
+  dreamCheck(fFedCow.layer === 'forage' && fFedCow.type === 'swingAt' && fSeen[fSeen.length - 1] === true,
+    'fed but carrying no food, a cow in view: Forage hunts it, and the plan and Gather give way');
+  const fStocked = calm(lDrives({ hunger: 10 }), lObs({ nearbyEntities: [fCow], inventoryFood: [{ name: 'bread', count: 5 }], inventory: [{ name: 'bread', count: 5 }], affordances: lAff({ canDig: [] }) }));
+  dreamCheck(fStocked.layer !== 'forage', 'carrying enough food, a fed body leaves the cow alone');
+  const fRipe = { name: 'carrots', age: 7, ripe: true, distance: 5, position: { x: 5, y: 64, z: 0 } };
+  const fGreen = { name: 'wheat', age: 3, ripe: false, distance: 2, position: { x: 2, y: 64, z: 0 } };
+  const fHarvest = calm(lDrives({ hunger: 60 }), lObs({ nearbyCrops: [fRipe, fGreen] }));
+  dreamCheck(fHarvest.layer === 'forage' && fHarvest.type === 'dig' && fHarvest.target === fRipe && fHarvest.harvest === 'carrots',
+    'hungry with ripe carrots in view: Forage harvests them (and leaves the green wheat to grow)');
+  const fOnlyGreen = calm(lDrives({ hunger: 60 }), lObs({ nearbyCrops: [fGreen] }));
+  dreamCheck(fOnlyGreen.type === 'seekFood', 'unripe crops are not food yet');
+  const fDropped = calm(lDrives({ hunger: 10 }), lObs({ nearbyItems: [{ name: 'carrot', distance: 3, position: { x: 3, y: 64, z: 0 } }] }));
+  dreamCheck(fDropped.layer === 'forage' && fDropped.type === 'pickup', 'food lying on the ground gets picked up');
+  dreamCheck(calm(lDrives({ hunger: 10 }), lObs({ timeOfDay: 12500, nearbyEntities: [fCow] })).layer === 'shelter', 'at dusk, shelter comes before stocking up');
+  let fClock = 500000;
+  const fMaker = () => createLayerStack({ random: () => 0.99, now: () => (fClock += 60000) });
+  const fWheat = { name: 'wheat', count: 3 };
+  dreamCheck(fMaker()(lDrives(), lObs({ inventory: [fWheat], tableNear: true })).item === 'bread', 'three wheat and a crafting table in reach: Make bakes bread');
+  const fPlace = fMaker()(lDrives(), lObs({ inventory: [fWheat, { name: 'crafting_table', count: 1 }] }));
+  dreamCheck(fPlace.type === 'place' && fPlace.item === 'crafting_table', 'three wheat, carrying a table: Make sets it down first');
+  dreamCheck(fMaker()(lDrives(), lObs({ inventory: [fWheat, { name: 'oak_planks', count: 4 }] })).item === 'crafting_table', 'three wheat, no table: Make makes one');
+  // Perception: crops are seen, with how ripe they are.
+  const fBlocks = { '1,0': { name: 'wheat', getProperties: () => ({ age: 3 }) }, '4,0': { name: 'carrots', getProperties: () => ({ age: 7 }) }, '2,0': { name: 'crafting_table' } };
+  const fP = (x) => ({ x, z: 0, distanceTo: () => x, key: `${x},0` });
+  const fBot = { entity: { position: { x: 0, y: 64, z: 0 } }, findBlocks: () => [fP(1), fP(4)], blockAt: (p) => fBlocks[p.key],
+    findBlock: ({ matching }) => (matching(fBlocks['2,0']) ? fBlocks['2,0'] : null) };
+  const fScan = scanCrops(fBot);
+  dreamCheck(fScan.crops.length === 2 && fScan.crops[0].name === 'carrots' && fScan.crops[0].ripe && !fScan.crops[1].ripe && fScan.tableNear,
+    'the body sees crops and how ripe they are (ripe first), and whether a crafting table is in reach');
+
+  // ---- Patterns across days (stage 3)
+  const { splitDays: dSplit, measure: dMeasure } = require('./tools/days');
+  const dT = (i, tod, extra = {}) => ({ ts: new Date(Date.parse('2026-11-20T00:00:00Z') + i * 1500).toISOString(), tod, isDay: tod < 13000,
+    pos: { x: i, y: 64, z: 0 }, health: 20, food: 10, action: { type: 'explore', layer: 'wander', voices: ['wander'] }, ...extra });
+  const dTicks = [dT(0, 22000), dT(1, 23500), dT(2, 100), dT(3, 5000), dT(4, 14000, { aff: { enclosed: true } }), dT(5, 200)];
+  const dDays = dSplit(dTicks);
+  const dM = dMeasure(dDays[1], 1);
+  dreamCheck(dDays.length === 3 && dDays[1].length === 3 && dM.mind === 'layers' && dM.distance === 2 && dM.nightEnclosed === 100 && dM.inControl.wander === 100,
+    'npm run days cuts the life into days at dawn and measures each (distance, nights enclosed, who was in control)');
+
+  // ---- Weighted memory and forgetting (docs/design-subsumption.md, stage 2)
+  console.log('\n=== Weighted memory ===');
+  const memMod = require('./vault/memory');
+  const fmM = require('./vault/frontmatter');
+  const mVault = fs.mkdtempSync(path.join(os.tmpdir(), 'minecraft-mind-memory-'));
+  const mDir = (d) => { fs.mkdirSync(path.join(mVault, d), { recursive: true }); return path.join(mVault, d); };
+  const mNow = new Date('2026-11-20T12:00:00Z');
+  const mWrite = (dir, title, data, body) => fs.writeFileSync(path.join(mDir(dir), `${title}.md`), fmM.stringify(data, body));
+  const mExp = (iso, title, valence, involves = []) => mWrite('Experiences', `${iso.slice(0, 13).replace(/-/g, '-')}${iso.slice(14, 16)} - ${title}`,
+    { is_a: '[[Event]]', timestamp: iso, ...(involves.length ? { involves: involves.map((t) => `[[${t}]]`) } : {}), tags: [`valence/${valence}`] },
+    `I ${title.toLowerCase()}.`);
+  for (let i = 0; i < 6; i++) mExp(`2026-11-1${i < 3 ? 6 : 7}T0${i}:00:00Z`, 'Took Damage From Unknown Cause', 'negative');
+  mExp('2026-11-16T09:00:00Z', 'Wandered Near The Pond', 'neutral');
+  mExp('2026-11-16T10:00:00Z', 'Saw A Cow In The Field', 'neutral', ['Cow']);
+  mExp('2026-11-20T11:00:00Z', 'Dug In At Dusk', 'positive');
+  mWrite('Goals', 'Close Myself In At Dusk', { is_a: '[[Goal]]', status: 'active' }, 'At dusk I want walls and a roof around me before the zombies come.');
+  mWrite('Goals', 'Old Finished Goal About Dusk Walls', { is_a: '[[Goal]]', status: 'done' }, 'At dusk walls and a roof around me.');
+  mWrite('Concepts/Entity', 'Cow', { valence: 0.4, encounter_count: 200 }, 'A cow.');
+
+  dreamCheck(memMod.initialWeight('experience', { tags: ['valence/negative'] }, 'Died By Day') > memMod.initialWeight('experience', { tags: ['valence/neutral'] }, 'Walked') &&
+    memMod.initialWeight('goal', { status: 'active' }) > memMod.initialWeight('goal', { status: 'done' }) &&
+    memMod.initialWeight('experience', { weight: 0.77 }) === 0.77,
+    'notes without a weight start from what they say (felt and deadly moments, active goals weigh more); a written weight wins');
+  const mem = createMemoryForSim();
+  function createMemoryForSim() { return memMod.createMemory({ vaultPath: mVault, now: () => mNow.getTime() }); }
+  mem.refresh();
+  const mStats = mem.stats();
+  dreamCheck(mStats.notes === 12 && mStats.byKind.experience === 9 && mStats.similarity === 'words', 'the index holds every kind of note, and falls back to word overlap with no embedding model');
+  const mHits = await mem.retrieve('it is dusk and I have no walls', { layer: 'shelter', k: 3 });
+  dreamCheck(mHits[0] && mHits[0].title === 'Close Myself In At Dusk', 'retrieval ranks the relevant AND important note first (the active goal beats the finished one with the same words)');
+  const mCow = await mem.retrieve('hungry, a cow nearby', { layer: 'forage', k: 2 });
+  dreamCheck(mCow.some((h) => h.title === 'Cow'), 'a layer\'s question finds the things it is about');
+
+  const mForget = memMod.forget(mVault, { replay: new Set(['Cow']), now: mNow, budget: 5, maxArchive: 100 });
+  const mLive = fs.readdirSync(path.join(mVault, 'Experiences'));
+  const mArch = fs.existsSync(path.join(mVault, 'Archive', 'Experiences')) ? fs.readdirSync(path.join(mVault, 'Archive', 'Experiences')) : [];
+  dreamCheck(mLive.length === 5 && mArch.length === 4 && mForget.archived === 4 && mForget.live === 5,
+    'over budget, the weakest Experiences leave live memory: 9 become 5 live + 4 archived, nothing deleted');
+  dreamCheck(mLive.some((f) => f.includes('Dug In At Dusk')), 'a fresh Experience (under a day old) is never forgotten that night');
+  const mFind = (word) => { const live = mLive.find((f) => f.includes(word)); const arch = mArch.find((f) => f.includes(word));
+    return fmM.parse(fs.readFileSync(live ? path.join(mVault, 'Experiences', live) : path.join(mVault, 'Archive', 'Experiences', arch), 'utf8')).data; };
+  const mPond = mArch.find((f) => f.includes('Pond'));
+  dreamCheck(mFind('Cow').weight > mFind('Pond').weight && !!mPond, 'what was met again (the cow) is pulled back above the unremarkable (the pond), which fades first');
+  const mGistFiles = fs.readdirSync(path.join(mVault, 'Gists'));
+  const mGist = mGistFiles.find((f) => f.startsWith('Wandered Near The Pond'));
+  const mGistData = mGist && fmM.parse(fs.readFileSync(path.join(mVault, 'Gists', mGist), 'utf8')).data;
+  dreamCheck(!!mGistData && mGistData.episodes === 1 && mGistData.tentative === true && /Pond/.test(String(mGistData.from_episodes)),
+    'archived episodes fold into a gist note that links back to them; one episode makes a tentative gist');
+  const mArchData = fmM.parse(fs.readFileSync(path.join(mVault, 'Archive', 'Experiences', mPond), 'utf8')).data;
+  dreamCheck(!!mArchData.archived_on && !!mArchData.archived_why && /Pond/.test(mArchData.gist), 'an archived note says when and why it left, and which gist holds it');
+  // Many of the same moment fold into one gist that is no longer tentative.
+  const mForget2 = memMod.forget(mVault, { now: new Date('2026-11-25T12:00:00Z'), budget: 1, maxArchive: 100 });
+  const mDamage = fmM.parse(fs.readFileSync(path.join(mVault, 'Gists', 'Took Damage From Unknown Cause.md'), 'utf8')).data;
+  dreamCheck(mDamage.episodes >= 3 && mDamage.tentative === false && mDamage.negative === mDamage.episodes,
+    'repeated moments become one gist with a tally ("went badly" N times), no longer tentative');
+  dreamCheck(mForget2.archived <= 100 && memMod.forget(mVault, { now: new Date('2026-11-26T12:00:00Z'), budget: 0, maxArchive: 1 }).archived <= 1,
+    'no sudden amnesia: at most maxArchive notes leave per sleep');
+  const mBack = mPond.replace(/\.md$/, '');
+  dreamCheck(memMod.restore(mVault, mBack) && fs.existsSync(path.join(mVault, 'Experiences', mPond)) && !fs.existsSync(path.join(mVault, 'Archive', 'Experiences', mPond)),
+    'an archived memory can come back to live memory (reconsolidation)');
+  mem.refresh();
+  dreamCheck(mem.stats().byKind.gist >= 2, 'gists are part of live memory, and retrieval can find them');
   console.log('\n=== Sample notes ===');
   const sampleStrategy = rates.sort((a, b) => a.rate - b.rate)[0];
   for (const rel of [

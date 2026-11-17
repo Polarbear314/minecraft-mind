@@ -19,7 +19,7 @@ const { setIntention, expireStaleIntention } = require('./vault/intentionStore')
 const { recordGap } = require('./vault/gapStore');
 const { knownEdible, knownInedible, learnEdible } = require('./vault/bodyKnowledge');
 const { workspaceDigest } = require('./brain/regions');
-const { EDIBLE_BY_NATURE } = require('./vault/inheritance');
+const { EDIBLE_BY_NATURE, CROPS } = require('./vault/inheritance');
 
 /** Strategy key: aimed acts carry their direction ("dig:below"). */
 function actionKey(action) {
@@ -91,6 +91,52 @@ function scanBlocks(bot) {
   return [...byName.values()].slice(0, MAX_BLOCKS_PER_TICK);
 }
 
+const CROP_RANGE = 16;
+
+/** A crop block's growth stage (0 = just planted), or null if unknown. */
+function cropAge(block) {
+  try {
+    if (typeof block.getProperties === 'function') {
+      const a = Number(block.getProperties().age);
+      if (Number.isFinite(a)) return a;
+    }
+  } catch (_) { /* fall through */ }
+  return Number.isFinite(Number(block.metadata)) ? Number(block.metadata) : null;
+}
+
+/**
+ * Crops in view (stage 2 food fix): [{ name, ripe, age, distance, position }],
+ * ripe ones first, then nearest. Plus whether a crafting table is within reach.
+ */
+function scanCrops(bot) {
+  const out = { crops: [], tableNear: false };
+  if (typeof bot.findBlocks !== 'function') return out;
+  const names = Object.keys(CROPS);
+  let matching;
+  if (bot.registry && bot.registry.blocksByName) {
+    matching = names.map((n) => bot.registry.blocksByName[n] && bot.registry.blocksByName[n].id).filter((id) => id != null);
+  } else {
+    matching = (block) => !!block && names.includes(block.name);
+  }
+  const me = bot.entity && bot.entity.position;
+  try {
+    for (const p of bot.findBlocks({ matching, maxDistance: CROP_RANGE, count: 48 }) || []) {
+      const block = bot.blockAt && bot.blockAt(p);
+      if (!block || !(block.name in CROPS)) continue;
+      const age = cropAge(block);
+      const distance = me && typeof p.distanceTo === 'function' ? Math.round(p.distanceTo(me) * 10) / 10 : null;
+      out.crops.push({ name: block.name, age, ripe: age != null && age >= CROPS[block.name], distance, position: p });
+    }
+  } catch (_) { /* no crops seen */ }
+  out.crops.sort((a, b) => (b.ripe - a.ripe) || ((a.distance || 0) - (b.distance || 0)));
+  out.crops = out.crops.slice(0, 8);
+  try {
+    out.tableNear = !!(typeof bot.findBlock === 'function' &&
+      bot.findBlock({ matching: (b) => !!b && b.name === 'crafting_table', maxDistance: 4 }));
+  } catch (_) { /* none */ }
+  return out;
+}
+
 /** Current biome name via the block under the agent, or null. */
 function currentBiome(bot) {
   try {
@@ -132,6 +178,9 @@ async function tick(bot, drives, vaultPath, opts = {}) {
   // (rules and Claude alike) can see and react to them.
   const nearbyBlocks = scanBlocks(bot);
   observation.nearbyBlocks = nearbyBlocks;
+  const cropScan = scanCrops(bot);
+  observation.nearbyCrops = cropScan.crops;
+  observation.tableNear = cropScan.tableNear;
 
   // Words heard since the last tick (the world's chat): guidance is perception
   // too. The recent lines ride on the observation so the decision layer —
@@ -505,4 +554,4 @@ async function tick(bot, drives, vaultPath, opts = {}) {
   };
 }
 
-module.exports = { tick, getFoundingGoal };
+module.exports = { tick, getFoundingGoal, scanCrops };

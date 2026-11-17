@@ -1,0 +1,238 @@
+// The behaviour stack (docs/design-subsumption.md, stage 1): MindBot organised
+// by BEHAVIOURS, after Rodney Brooks's subsumption architecture, instead of by
+// brain regions. Turned on with MIND=layers; MIND=regions (default) keeps the
+// region design (brain/arbiter.js).
+//
+// Every tick each layer looks at the same situation and either stays quiet
+// (null) or proposes an act. The highest layer that speaks wins:
+//
+//   0 Survive  — always first and never learns: the floor that keeps the body
+//                alive while the others learn (border, creepers, fear, hazards,
+//                starving with food in hand, a hostile on top of it at night).
+//   5 Make     — runs a plan or skill from the vault; makes planks, a table, bread.
+//   4 Shelter  — evening and night: bed, stay closed in, or dig in and seal.
+//   3 Gather   — by day, fed and safe: pick things up, break wood, keep blocks.
+//   2 Forage   — hungry: eat, take meat, hunt, taste, go looking.
+//   1 Wander   — the default: go to a person to watch, fiddle, explore.
+//
+// Brooks's wires across layers: Survive acting, Shelter holding the body in
+// the evening, urgent hunger, or food within reach while carrying little
+// inhibits Make; food within reach also quiets Gather (a running plan pauses rather than keeping the
+// body out after dark).
+//
+// Stage 1 layers are hand-written, taken from today's reflexes (reflexes.js)
+// and instinct (decide.js). Later stages swap each learned layer's propose()
+// for a model, with the same shape: (drives, o) -> action | null.
+const { createReflexes, isOverriding, isEvening } = require('../decision/reflexes');
+const { lookup } = require('../vault/ontologyMap');
+const { FEAR_THRESHOLD, HUNGER_THRESHOLD, BORDER_MARGIN } = require('../decision/decide');
+const { FOOD_DROPS } = require('../vault/inheritance');
+
+const HUNGER_URGENT = 75;
+const HEALTH_SAFE = 10;
+const AVOID_RANGE = 5;
+const EXPERIMENT_CHANCE = 0.15; // Wander's salt: fiddle instead of walking on
+const TASTE_CHANCE = 0.25; // Forage's salt: starving, try something carried
+const HOSTILE_ON_TOP = 3;
+const FLEE_RANGE = 10; // fear sends it running only from a hostile this close (2026-11-17: fleeing from 16 blocks away took 10% of the first day)
+const GATHER_SAFE = 8; // no hostile this close to stop and gather
+const ITEM_RANGE = 8;
+const LOG_RANGE = 16;
+const ENOUGH_BLOCKS = 8; // carried placeable blocks: enough to seal a shelter
+const ENOUGH_LOGS = 16;
+const MAKE_COOLDOWN_MS = 30000;
+const CROP_REACH = 16;
+const STOCK = 4; // carrying fewer bites than this, Forage goes for food in reach even when not hungry
+const BREAD_WHEAT = 3;
+
+const ORDER = ['survive', 'make', 'shelter', 'gather', 'forage', 'wander']; // who wins, first to last
+const RANK = { survive: 0, wander: 1, forage: 2, gather: 3, shelter: 4, make: 5 };
+
+const count = (o, test) => (o.inventory || []).filter((i) => test(i.name)).reduce((n, i) => n + (i.count || 1), 0);
+const isLog = (n) => /_(log|stem)$/.test(n);
+const isPlanks = (n) => /_planks$/.test(n);
+const foodCarried = (o) => (o.inventoryFood || []).reduce((n, i) => n + (i.count || 1), 0);
+const hostileWithin = (o, d) => !!(o.nearestHostile && o.nearestHostile.distance != null && o.nearestHostile.distance <= d);
+
+function createLayerStack({
+  planRunner = null,
+  blackboard = null,
+  experimentChance = EXPERIMENT_CHANCE,
+  tasteChance = TASTE_CHANCE,
+  random = Math.random,
+  now = () => Date.now(),
+} = {}) {
+  const ownReflexes = createReflexes();
+  let lastMade = 0;
+
+  // ------------------------------------------------------------ 0 Survive
+  function survive(drives, o, rx) {
+    if (o.borderDistance != null && o.borderDistance <= BORDER_MARGIN) return { type: 'returnInside' };
+    const c = rx.creeper(o);
+    if (c) return c;
+    // Evening and something right on top of us while still out: run.
+    if (isEvening(o) && !(o.affordances && o.affordances.enclosed) && hostileWithin(o, HOSTILE_ON_TOP)) {
+      return { type: 'flee', target: o.nearestHostile };
+    }
+    if (drives.fear > FEAR_THRESHOLD && hostileWithin(o, FLEE_RANGE) && !(isEvening(o) && o.affordances && o.affordances.enclosed)) {
+      return { type: 'flee', target: o.nearestHostile };
+    }
+    const hazard = (o.nearbyBlocks || []).find(
+      (b) => b.distance != null && b.distance <= AVOID_RANGE && lookup('block', b.name).drives.fear >= 0.5,
+    );
+    if (hazard) return { type: 'avoid', target: hazard };
+    const lowHealth = o.health != null && o.health <= HEALTH_SAFE;
+    if ((drives.hunger > HUNGER_URGENT || (lowHealth && drives.hunger > HUNGER_THRESHOLD)) && (o.inventoryFood || []).length) {
+      return { type: 'eat', item: o.inventoryFood[0].name };
+    }
+    return null;
+  }
+
+  // ------------------------------------------------------------ 4 Shelter
+  function shelter(drives, o, rx) {
+    return rx.shelter(o);
+  }
+
+  // ------------------------------------------------------------ 5 Make
+  function make(drives, o, rx, { inhibited }) {
+    if (planRunner) {
+      const step = planRunner.next(o, { emergency: inhibited });
+      if (step) return step;
+    }
+    if (inhibited || hostileWithin(o, GATHER_SAFE)) return null;
+    if (now() - lastMade < MAKE_COOLDOWN_MS) return null;
+    const log = (o.inventory || []).find((i) => isLog(i.name));
+    const planks = count(o, isPlanks);
+    const planksFrom = (l) => l.name.replace(/^stripped_/, '').replace(/_(log|stem)$/, '_planks'); // stripped_oak_log -> oak_planks
+    const hasTable = count(o, (n) => n === 'crafting_table') > 0;
+    let want = null;
+    if (count(o, (n) => n === 'wheat') >= BREAD_WHEAT) {
+      // Bread needs a crafting table within reach: use one, set one down, or make one.
+      if (o.tableNear) want = 'bread';
+      else if (hasTable) { lastMade = now(); return { type: 'place', at: 'ahead', item: 'crafting_table' }; }
+      else if (planks >= 4) want = 'crafting_table';
+      else if (log) want = planksFrom(log);
+    } else if (log && planks < 8) want = planksFrom(log);
+    else if (planks >= 4 && !hasTable) want = 'crafting_table';
+    if (!want) return null;
+    lastMade = now();
+    return { type: 'craft', item: want };
+  }
+
+  // ------------------------------------------------------------ 3 Gather
+  function gather(drives, o, rx, { foodChance }) {
+    if (foodChance) return null; // food in reach and none carried: Forage's turn
+    if (isEvening(o) || drives.hunger > HUNGER_THRESHOLD || hostileWithin(o, GATHER_SAFE)) return null;
+    if (o.health != null && o.health <= HEALTH_SAFE) return null;
+    const item = (o.nearbyItems || []).find((i) => i.distance == null || i.distance <= ITEM_RANGE);
+    if (item) return { type: 'pickup', target: item };
+    if (count(o, isLog) < ENOUGH_LOGS) {
+      const log = (o.nearbyBlocks || []).filter((b) => isLog(b.name) && b.position && (b.distance == null || b.distance <= LOG_RANGE))
+        .sort((x, y) => (x.distance || 0) - (y.distance || 0))[0];
+      if (log) return { type: 'dig', target: log };
+    }
+    const a = o.affordances;
+    const blocks = a && a.placeable ? count(o, (n) => a.placeable.includes(n)) : 0;
+    if (a && blocks < ENOUGH_BLOCKS) {
+      const side = (a.canDig || []).find((d) => d !== 'below' && d !== 'above');
+      if (side) return { type: 'dig', at: side };
+    }
+    return null;
+  }
+
+  // ------------------------------------------------------------ 2 Forage
+  /** Food that can be had right here: lying on the ground, a ripe crop, an animal. */
+  function foodInReach(drives, o, rx) {
+    const item = (o.nearbyItems || []).find((i) => FOOD_DROPS.includes(i.name) && (i.distance == null || i.distance <= ITEM_RANGE));
+    if (item) return { type: 'pickup', target: item };
+    const crop = (o.nearbyCrops || []).find((c) => c.ripe && c.position && (c.distance == null || c.distance <= CROP_REACH));
+    if (crop) return { type: 'dig', target: crop, harvest: crop.name };
+    return rx.hunt(drives, o); // (hunts only when carrying no food)
+  }
+
+  function forage(drives, o, rx) {
+    const hungry = drives.hunger > HUNGER_THRESHOLD;
+    if (hungry && foodCarried(o)) return { type: 'eat', item: o.inventoryFood[0].name };
+    if (!hungry) {
+      // Fed, but carrying little: by day and with no hostile close, take the
+      // food that's right here (2026-11-17: it walked past cows, carrots and
+      // wheat while fed, and starved later).
+      if (foodCarried(o) >= STOCK || isEvening(o) || hostileWithin(o, GATHER_SAFE)) return null;
+      return foodInReach(drives, o, rx);
+    }
+    const f = foodInReach(drives, o, rx);
+    if (f) return f;
+    if (drives.hunger > HUNGER_URGENT) {
+      const blocks = new Set((o.affordances && o.affordances.placeable) || []);
+      const untried = (o.inventory || []).filter((i) => !blocks.has(i.name) && !(o.inedible || []).includes(i.name));
+      if (untried.length && random() < tasteChance) {
+        return { type: 'eat', item: untried[Math.floor(random() * untried.length)].name };
+      }
+    }
+    return { type: 'seekFood' };
+  }
+
+  // ------------------------------------------------------------ 1 Wander
+  function experiment(o) {
+    const options = [];
+    const a = o.affordances;
+    const pick = (arr) => arr[Math.floor(random() * arr.length)];
+    const creature = (o.nearbyEntities || []).find((e) => !e.isPlayer);
+    if (creature) options.push({ type: 'swingAt', target: creature });
+    if (a && a.canDig && a.canDig.length) options.push({ type: 'dig', at: pick(a.canDig) });
+    if (a && a.canPlace && a.canPlace.length) options.push({ type: 'place', at: pick(a.canPlace) });
+    options.push({ type: 'jump' });
+    for (const kind of ['door', 'bed', 'trapdoor', 'gate']) if (a && a[kind]) options.push({ type: 'use', target: kind });
+    return pick(options);
+  }
+
+  function wander(drives, o) {
+    const teacher = (o.nearbyEntities || []).find((e) => e.isPlayer);
+    const lowHealth = o.health != null && o.health <= HEALTH_SAFE;
+    if (!lowHealth && teacher && drives.dominant() === 'curiosity' && drives.curiosity > 40) {
+      return { type: 'approach', target: teacher, reason: 'learn' };
+    }
+    if (drives.curiosity > 40 && random() < experimentChance) return experiment(o);
+    if (drives.curiosity > 40 || isEvening(o) === false) return { type: 'explore' };
+    return { type: 'idle' };
+  }
+
+  const LAYERS = { survive, make, shelter, gather, forage, wander };
+
+  /** decide(drives, o): every layer proposes; the highest that speaks wins. */
+  return function decideByLayers(drives, o) {
+    const rx = o.reflexes || ownReflexes;
+    const proposals = {};
+    proposals.survive = survive(drives, o, rx);
+    proposals.shelter = shelter(drives, o, rx);
+    proposals.forage = forage(drives, o, rx);
+    // Food right here (a concrete act, not just "go looking") while carrying
+    // little: Make and Gather give way to it.
+    const foodChance = !!(proposals.forage && proposals.forage.type !== 'seekFood' && foodCarried(o) < STOCK);
+    // Make is inhibited (a running plan pauses) while Survive has the body or
+    // Shelter is holding it at night.
+    // Urgent hunger inhibits it too: a starving body isn't kept busy with a
+    // project (2026-11-17: hunger reached 90 while a plan kept exploring).
+    const inhibited = !!proposals.survive || !!(proposals.shelter && isOverriding(proposals.shelter, o)) ||
+      drives.hunger > HUNGER_URGENT || foodChance;
+    for (const name of ORDER) {
+      if (name === 'shelter' || name === 'survive' || name === 'forage') continue;
+      proposals[name] = LAYERS[name](drives, o, rx, { inhibited, foodChance });
+    }
+    const voices = ORDER.filter((n) => proposals[n]);
+    const layer = voices[0] || 'wander';
+    const act = { ...(proposals[layer] || { type: 'idle' }) };
+    act.layer = layer;
+    act.voices = voices;
+    // A plan step keeps source 'plan': the plan runner only advances steps it
+    // recognises as its own (planRunner.afterTick).
+    if (!act.plan) act.source = `layer:${layer}`;
+    if (blackboard) {
+      blackboard.post('layers', layer, { action: act.type, voices },
+        `${layer} → ${act.type}${act.at ? ' ' + act.at : ''}${act.item ? ' ' + act.item : ''}${voices.length > 1 ? ` (over ${voices.slice(1).join(', ')})` : ''}`);
+    }
+    return act;
+  };
+}
+
+module.exports = { createLayerStack, ORDER, RANK };
