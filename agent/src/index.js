@@ -5,27 +5,108 @@ const config = require('./config');
 const Drives = require('./drives/drives');
 const { tick, getFoundingGoal } = require('./loop');
 const { createLlmDecide } = require('./decision/llmDecide');
-const { createClaudeCodeDecide, askClaudeCli } = require('./decision/claudeCodeDecide');
+const { createClaudeCodeDecide } = require('./decision/claudeCodeDecide');
 const { createDreamer } = require('./reflection/dream');
 const { createChatChannel } = require('./perception/chatChannel');
 const { attachObserver } = require('./observation/liveObserver');
+const { attachWorldBorder } = require('./perception/worldBorder');
+const { createBodyJournal } = require('./reflection/bodyJournal');
+const { loadBrainMap, regionProvider, describe: describeBrain } = require('./brain/brainMap');
+const { textAsk, localProvider } = require('./brain/providers');
+const { createBlackboard } = require('./brain/blackboard');
+const { createAmygdala, createInnerVoice, createRumination } = require('./brain/regions');
+const { createArbiter } = require('./brain/arbiter');
+const { toAction } = require('./decision/llmDecide');
+const { onExperience } = require('./vault/experienceLog');
+const { ensureInheritance } = require('./vault/inheritance');
+const { createReflexes } = require('./decision/reflexes');
+const { createRcon } = require('./brain/rcon');
+const { createWorldGrowth } = require('./brain/worldGrowth');
+
+// The brain map (agent/brain-map.json): which mind runs each brain region.
+const brain = loadBrainMap();
+const claudeMode = config.decisionMode === 'claude-code';
+
+// The blackboard every region reads and writes, all at once (brain/blackboard.js).
+// It also writes logs/brain-live.json every second for the brain view.
+const blackboard = createBlackboard({ logDir: config.decisionLogDir });
+
+// Phase 2: born knowing the basics (Inheritance/ notes), survival reflexes,
+// and a world border that grows as it thrives (docs/design-born-knowing.md).
+const nature = brain.nature || {};
+if (nature.bornKnowing) {
+  const added = ensureInheritance(config.vaultPath);
+  if (added.length) console.log(`[mind] Born knowing: wrote ${added.join(', ')} into Inheritance/.`);
+}
+const reflexes = nature.reflexes ? createReflexes() : null;
+const growth = nature.growth && config.rcon.password
+  ? createWorldGrowth({
+    vaultPath: config.vaultPath,
+    rcon: createRcon({ port: config.rcon.port, password: config.rcon.password }),
+    startSize: nature.startBorder || 128,
+  })
+  : null;
+if (nature.growth && !growth) console.log('[mind] World growth is on but RCON_PASSWORD is not set in agent/.env: the border will not grow.');
+blackboard.start();
+onExperience((title) => blackboard.fire('temporal', `remembered: ${title}`));
 
 // Claude decision layers: 'llm' calls the API each tick; 'claude-code' shells
 // out to the Claude Code CLI (account login, no API key) with a throttle.
 const llmDecideFn =
   config.decisionMode === 'llm'
     ? createLlmDecide({ apiKey: config.anthropicKey, model: config.llmModel, vaultPath: config.vaultPath })
-    : config.decisionMode === 'claude-code'
-      ? createClaudeCodeDecide({ model: config.llmModel, vaultPath: config.vaultPath, minIntervalMs: config.llmMinIntervalMs })
+    : claudeMode
+      ? createClaudeCodeDecide({
+        model: brain.cortex.model,
+        vaultPath: config.vaultPath,
+        minIntervalMs: config.llmMinIntervalMs,
+        // Claude's chosen course of action stands until it is asked again (only
+        // real danger breaks it), so a plan like "hit the pig until it falls"
+        // isn't stomped by instinct's wandering seconds later.
+        holdMs: config.llmMinIntervalMs,
+        logDir: config.decisionLogDir,
+        onThink: (stage, info) => {
+          if (stage === 'asking') {
+            blackboard.fire('thalamus', 'passed the latest signals from the rest of the mind up to the cortex');
+            blackboard.fire('frontal', `deliberating (${info.model})…`);
+            blackboard.fire('callosum', `cortex → claude:${info.model}`);
+          }
+        },
+      })
       : undefined;
 
-// Dreaming: a background reflection pass over the vault, triggered by
-// surviving a night (and optionally DREAM_INTERVAL_MS). Needs the Claude CLI,
-// so it comes with claude-code mode.
-const dreamer =
-  config.decisionMode === 'claude-code'
-    ? createDreamer({ vaultPath: config.vaultPath, model: config.llmModel, intervalMs: config.dreamIntervalMs })
-    : undefined;
+// The arbiter: each tick the body acts on brainstem emergencies first, then
+// Claude's plan, then the inner voice's fresh urge, then plain instinct.
+const decideFn = claudeMode && llmDecideFn
+  ? createArbiter({ decide: llmDecideFn, blackboard, toAction })
+  : llmDecideFn;
+
+// Always-on regions on the local model, each its own loop (brain/regions.js).
+const localMind = brain.local && brain.local.model
+  ? localProvider({ model: brain.local.model, host: brain.local.host, timeoutMs: 60000 })
+  : null;
+const alwaysOn = claudeMode && localMind ? [
+  createAmygdala({ provider: localMind, blackboard, vaultPath: config.vaultPath, everyMs: brain.amygdala.everyMs }),
+  createInnerVoice({ provider: localMind, blackboard, vaultPath: config.vaultPath, everyMs: brain.innerVoice.everyMs }),
+  createRumination({ provider: localMind, blackboard, vaultPath: config.vaultPath, everyMs: brain.rumination.everyMs }),
+] : [];
+
+// Dreaming (hippocampus): a background reflection pass over the vault,
+// triggered by surviving a night (and optionally DREAM_INTERVAL_MS) once
+// enough new experiences have piled up. Runs on whichever mind the brain map
+// says — Claude when awake, the local model when Claude is resting.
+const dreamProvider = claudeMode ? regionProvider(brain, 'hippocampus', { timeoutMs: 90000 }) : null;
+const dreamer = dreamProvider
+  ? createDreamer({
+    vaultPath: config.vaultPath,
+    provider: dreamProvider,
+    intervalMs: config.dreamIntervalMs,
+    minNewExperiences: brain.hippocampus.minNewExperiences || 0,
+    logDir: config.decisionLogDir,
+    onDream: ({ by, written }) => blackboard.fire('hippocampus',
+      `dreamed (${by}): ${written.map((w) => w.title).join('; ') || 'nothing new'}`),
+  })
+  : undefined;
 
 console.log(`[mind] Connecting to ${config.host}:${config.port} as ${config.username}...`);
 
@@ -38,6 +119,9 @@ const bot = mineflayer.createBot({
 });
 
 bot.loadPlugin(pathfinder);
+// Feel the world border (the server sends it on join): the brainstem keeps
+// the body inside it.
+attachWorldBorder(bot);
 
 // The ears: in-game chat (and whispers) flow into the mind as perception.
 // Henry's words are guidance the agent weighs, never commands it obeys.
@@ -57,24 +141,40 @@ bot.on('whisper', (username, message) => {
 // beings' actions into beliefs (theory of mind) and goals to learn for itself
 // — every one serving [[Live A Good Life]]. It decides what's worth watching
 // with OMNI-style interestingness and reads intent MindForge-style. In
-// claude-code mode it uses Claude for both (rare, background, non-blocking);
-// otherwise it runs on pure heuristics. Attach here so its blockUpdate
-// listener is live from connection.
-const watchAsk =
-  config.decisionMode === 'claude-code'
-    ? (prompt) => askClaudeCli(prompt, config.llmModel, 60000)
-    : undefined;
+// claude-code mode it uses the brain map's social region for both (rare,
+// background, non-blocking); otherwise it runs on pure heuristics. Attach
+// here so its blockUpdate listener is live from connection.
+const socialProvider = claudeMode ? regionProvider(brain, 'social', { timeoutMs: 60000 }) : null;
+const watchAsk = socialProvider ? textAsk(socialProvider, { json: true }) : undefined;
 const observer = attachObserver(bot, {
   vaultPath: config.vaultPath,
   moiAsk: watchAsk,
   tomAsk: watchAsk,
 });
 
+// The body's journal: every tick to logs/ticks-*.jsonl, deaths and graded
+// nights to the vault as Experiences (reflection/bodyJournal.js).
+const journal = createBodyJournal({
+  vaultPath: config.vaultPath,
+  logDir: config.decisionLogDir,
+  onNight: growth ? (report, now) => growth.onNight(report, now) : null,
+});
+bot.on('death', () => {
+  console.log('[mind] Died.');
+  journal.noteDeath(new Date());
+});
+
 bot.once('spawn', () => {
   console.log('[mind] Spawned. Vault:', config.vaultPath);
   const goal = getFoundingGoal(config.vaultPath);
   if (goal) console.log(`[mind] Founding goal: ${goal}`);
-  console.log(`[mind] Decision mode: ${config.decisionMode}${llmDecideFn ? ` (${config.llmModel})` : ''}`);
+  console.log(`[mind] Decision mode: ${config.decisionMode}`);
+  if (claudeMode) {
+    console.log(`[mind] Brain map: ${describeBrain(brain)}`);
+    if (!brain.local.model) console.log('[mind] No local model set (LOCAL_MODEL / brain-map.json): when Claude rests, dreaming waits.');
+    console.log(`[mind] Nature: born knowing ${nature.bornKnowing ? 'on' : 'off'} · reflexes ${reflexes ? 'on' : 'off'} · world growth ${growth ? `on (${growth.state().size} blocks, ${growth.state().streak}/3 nights)` : 'off'}`);
+    console.log(`[mind] Decision log: ${config.decisionLogDir || 'off'}`);
+  }
 
   // Optional first-person view in the browser (VIEWER_PORT in .env).
   if (config.viewerPort) {
@@ -98,15 +198,20 @@ bot.once('spawn', () => {
 
   const drives = new Drives();
   let thinking = false;
+  // The always-on regions start with the body; they rest whenever it isn't ticking.
+  for (const region of alwaysOn) region.start();
+  if (alwaysOn.length) console.log(`[mind] Always-on regions firing on ${brain.local.model}: ${alwaysOn.map((r) => r.name).join(', ')}`);
 
   setInterval(async () => {
     if (thinking) return; // don't overlap slow ticks
     thinking = true;
     try {
-      const summary = await tick(bot, drives, config.vaultPath, { decide: llmDecideFn, dreamer, chat, observer });
+      const summary = await tick(bot, drives, config.vaultPath, { decide: decideFn, dreamer, chat, observer, journal, blackboard, reflexes, bornKnowing: !!nature.bornKnowing });
       const d = summary.drives;
+      const act = summary.action;
+      const res = act.result && act.result.ok === false ? ` (couldn't: ${act.result.reason})` : '';
       console.log(
-        `[tick] ${summary.action.type} | hunger ${Math.round(d.hunger)} fear ${Math.round(d.fear)} ` +
+        `[tick] ${act.type}${act.at ? ` ${act.at}` : ''}${res} | hunger ${Math.round(d.hunger)} fear ${Math.round(d.fear)} ` +
         `curiosity ${Math.round(d.curiosity)} | ${summary.results.length} encounters` +
         (summary.newConceptCount ? ` (${summary.newConceptCount} new)` : '') +
         (summary.action.thought ? ` | "${summary.action.thought}"` : '') +

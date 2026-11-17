@@ -29,7 +29,10 @@ class Drives {
     if (signals.tookDamage) fear += 30;
     fear += Math.min(signals.hostilesNearby || 0, 3) * 10;
     if (signals.isDark) fear += 5;
-    if (!signals.tookDamage && !(signals.hostilesNearby > 0)) fear *= 0.85;
+    // The amygdala's gut feeling (0-1, from the local model) adds dread of its own.
+    const gut = Number(signals.gutThreat) || 0;
+    if (gut > 0.5) fear += (gut - 0.5) * 30;
+    if (!signals.tookDamage && !(signals.hostilesNearby > 0) && gut <= 0.5) fear *= 0.85;
     this.fear = clamp(fear);
 
     // Curiosity builds during familiarity, is satisfied (drops) by novelty.

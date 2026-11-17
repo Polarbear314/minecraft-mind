@@ -18,8 +18,11 @@ const { strategyLines } = require('../vault/strategyStore');
 const { foundingGoalTitle, listGoals, writeSubgoal } = require('../vault/goalStore');
 const { writeInsight, writeSkill, listInsights, listSkills } = require('../vault/dreamStore');
 const { askClaudeCli } = require('../decision/claudeCodeDecide');
+const { appendJsonLine } = require('../decision/decisionLog');
+const { inheritanceLines } = require('../vault/inheritance');
 
 const MAX_NOTES_PER_DREAM = 3;
+const DREAM_EXPERIENCES = 15; // recent memories shown; small local models degrade on long prompts
 const MAX_LEARNED_FROM = 5;
 const MAX_TITLE_LENGTH = 60;
 const DREAM_CLI_TIMEOUT_MS = 90000; // dreams may think longer than decisions
@@ -48,6 +51,27 @@ function experienceTitles(vaultPath) {
   } catch (_) {
     return [];
   }
+}
+
+/**
+ * Resolve a learned_from link a mind wrote to a real Experience title.
+ * Experience titles are "<timestamp> - <what happened>", and minds (Opus
+ * included, per the 2026-11-16 bake-off) often cite only "<what happened>" or
+ * get the timestamp slightly wrong. Exact match first; otherwise the MOST
+ * RECENT experience whose "<what happened>" part matches. null if none does.
+ * `titles` must be sorted oldest-first (experienceTitles() returns that).
+ */
+function resolveExperienceLink(raw, titles, titleSet = new Set(titles)) {
+  const clean = paths.sanitize(String(raw || '')).trim();
+  if (!clean) return null;
+  if (titleSet.has(clean)) return clean;
+  const strip = (t) => t.replace(/^\d{4}-\d{2}-\d{2}T\d{4}\s*-\s*/, '').trim().toLowerCase();
+  const want = strip(clean);
+  if (!want) return null;
+  for (let i = titles.length - 1; i >= 0; i -= 1) {
+    if (strip(titles[i]) === want) return titles[i];
+  }
+  return null;
 }
 
 /** The most recent Experiences, title + a line of prose each. Sentences with
@@ -145,8 +169,32 @@ const DREAM_PROMPT =
   '"skills": [{"title": "...", "body": "...", "learned_from": ["<exact experience title>"]}]} ' +
   '(each array may be empty).';
 
+// The same shape as JSON Schema, for minds that can be held to it (the local
+// model via Ollama's structured output). Claude just follows the prompt.
+const NOTE_WITH_SOURCES = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    body: { type: 'string' },
+    learned_from: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['title', 'body', 'learned_from'],
+};
+const DREAM_SCHEMA = {
+  type: 'object',
+  properties: {
+    insights: { type: 'array', items: NOTE_WITH_SOURCES },
+    subgoals: {
+      type: 'array',
+      items: { type: 'object', properties: { title: { type: 'string' }, body: { type: 'string' } }, required: ['title', 'body'] },
+    },
+    skills: { type: 'array', items: NOTE_WITH_SOURCES },
+  },
+  required: ['insights', 'subgoals', 'skills'],
+};
+
 /** Assemble everything the dream is allowed to see. Vault only — no game. */
-function buildDreamPrompt(vaultPath) {
+function buildDreamPrompt(vaultPath, { experiences: nExperiences = DREAM_EXPERIENCES } = {}) {
   const founding = foundingGoalTitle(vaultPath);
   const goals = listGoals(vaultPath)
     .map((g) => `- ${g.title}${g.title === founding ? ' (founding goal)' : ''}: ${excerpt(g.body)}`)
@@ -155,10 +203,16 @@ function buildDreamPrompt(vaultPath) {
   const skills = listSkills(vaultPath).map((s) => `- ${s.title}`).join('\n');
   const strategies = strategyLines(vaultPath, 12);
   const concepts = strongestConceptLines(vaultPath);
-  const experiences = recentExperienceLines(vaultPath);
+  const experiences = recentExperienceLines(vaultPath, nExperiences);
   return [
     DREAM_PROMPT,
     '',
+    (() => {
+      const born = inheritanceLines(vaultPath);
+      return born ? `What you were born knowing (not a memory; simply how the world works):
+${born}
+` : null;
+    })(),
     'Your goals:',
     goals || '(none)',
     '',
@@ -184,18 +238,21 @@ function buildDreamPrompt(vaultPath) {
  * MAX_NOTES_PER_DREAM notes, never overwrite, learned_from links only to
  * Experiences that really exist, skills MUST cite at least one real
  * experience. Returns [{ kind, title }] for what was actually written.
+ * dreamedBy ("claude:opus", "local:qwen3:14b") is stamped on every note, so
+ * the vault shows which mind learned what.
  */
-function applyDream(vaultPath, parsed, timestamp = new Date()) {
+function applyDream(vaultPath, parsed, timestamp = new Date(), dreamedBy = null, maxNotes = MAX_NOTES_PER_DREAM) {
   const written = [];
   if (!parsed || typeof parsed !== 'object') return written;
-  const existing = new Set(experienceTitles(vaultPath));
+  const titles = experienceTitles(vaultPath);
+  const existing = new Set(titles);
   const founding = foundingGoalTitle(vaultPath);
 
-  const validLinks = (raw) =>
+  const validLinks = (raw) => [...new Set(
     (Array.isArray(raw) ? raw : [])
-      .map((t) => paths.sanitize(t))
-      .filter((t) => existing.has(t))
-      .slice(0, MAX_LEARNED_FROM);
+      .map((t) => resolveExperienceLink(t, titles, existing))
+      .filter(Boolean)
+  )].slice(0, MAX_LEARNED_FROM);
   const asArray = (v) => (Array.isArray(v) ? v : []);
   const cleanTitle = (t) => paths.sanitize(String(t || '')).slice(0, MAX_TITLE_LENGTH).trim();
 
@@ -206,22 +263,22 @@ function applyDream(vaultPath, parsed, timestamp = new Date()) {
   ];
 
   for (const { kind, note } of queue) {
-    if (written.length >= MAX_NOTES_PER_DREAM) break;
+    if (written.length >= maxNotes) break;
     try {
       const title = cleanTitle(note.title);
       if (!title) continue;
       const body = String(note.body || '').trim();
       let result = null;
       if (kind === 'insight') {
-        result = writeInsight(vaultPath, { title, body, learnedFrom: validLinks(note.learned_from), timestamp });
+        result = writeInsight(vaultPath, { title, body, learnedFrom: validLinks(note.learned_from), timestamp, dreamedBy });
       } else if (kind === 'subgoal') {
         if (founding && title !== founding) {
-          result = writeSubgoal(vaultPath, { title, body, servesTitle: founding, timestamp });
+          result = writeSubgoal(vaultPath, { title, body, servesTitle: founding, timestamp, dreamedBy });
         }
       } else if (kind === 'skill') {
         // A skill is remembered know-how: it must come from real experience.
         const links = validLinks(note.learned_from);
-        if (links.length) result = writeSkill(vaultPath, { title, body, learnedFrom: links, timestamp });
+        if (links.length) result = writeSkill(vaultPath, { title, body, learnedFrom: links, timestamp, dreamedBy });
       }
       if (result) written.push({ kind, title: result.title });
     } catch (_) { /* one bad note must not spoil the dream */ }
@@ -231,30 +288,73 @@ function applyDream(vaultPath, parsed, timestamp = new Date()) {
 
 // --------------------------------------------------------------- the dreamer
 
+/** How many notes a parsed dream proposed (before the guardrails). */
+function proposedCount(parsed) {
+  if (!parsed || typeof parsed !== 'object') return 0;
+  return ['insights', 'subgoals', 'skills']
+    .reduce((n, k) => n + (Array.isArray(parsed[k]) ? parsed[k].length : 0), 0);
+}
+
 /**
  * Factory: returns a dreamer whose maybe({ isDay }) is called once per tick
  * and NEVER blocks. A dream starts in the background when day breaks after a
- * night (it survived!) or when intervalMs has elapsed (0 = day-break only).
- * opts.ask (async prompt -> raw text) is injectable so the sim can stub the
- * CLI; the default shells out to `claude -p` like the decision layer.
+ * night (it survived!) or when intervalMs has elapsed (0 = day-break only) —
+ * and only if at least minNewExperiences new Experience notes were written
+ * since the last dream (nothing new lived, nothing new to dream about).
+ *
+ * The mind that dreams:
+ *   opts.provider — a brain provider (src/brain/providers.js): ask(prompt,
+ *                   { schema }) -> { text, by }. The normal path.
+ *   opts.ask      — older/sim form: async prompt -> raw text.
+ *   neither       — `claude -p --model <model>` like the decision layer.
+ * opts.logDir: write logs/dreams-YYYY-MM-DD.jsonl (prompt, reply, outcome).
  */
-function createDreamer({ vaultPath, model, intervalMs = 0, ask }) {
-  const askFn = ask || ((prompt) => askClaudeCli(prompt, model, DREAM_CLI_TIMEOUT_MS));
+function createDreamer({ vaultPath, model, intervalMs = 0, ask, provider, minNewExperiences = 0, logDir = null, onDream = null }) {
+  const think = provider
+    ? (prompt) => provider.ask(prompt, { schema: DREAM_SCHEMA })
+    : async (prompt) => ({
+      text: await (ask || ((p) => askClaudeCli(p, model, DREAM_CLI_TIMEOUT_MS)))(prompt),
+      by: model ? `claude:${model}` : null,
+    });
   let lastIsDay = null;
   let lastDream = Date.now(); // boot counts as a dream: no dreaming on wake-up
+  let experiencesAtLastDream = experienceTitles(vaultPath).length;
   let busy = false;
 
+  function log(entry) {
+    if (logDir) appendJsonLine(logDir, 'dreams', entry);
+  }
+
   async function dream(reason) {
-    const raw = await askFn(buildDreamPrompt(vaultPath));
-    const start = raw.indexOf('{');
-    const end = raw.lastIndexOf('}');
-    if (start === -1 || end === -1) throw new Error('no JSON in dream output');
-    const written = applyDream(vaultPath, JSON.parse(raw.slice(start, end + 1)));
-    if (written.length) {
-      console.log(`[dream] (${reason}) wrote ${written.length} note(s): ` +
-        written.map((w) => `${w.kind} "${w.title}"`).join(', '));
+    const startedAt = Date.now();
+    const prompt = buildDreamPrompt(vaultPath);
+    let reply = null;
+    try {
+      reply = await think(prompt);
+      const raw = String(reply.text);
+      const start = raw.indexOf('{');
+      const end = raw.lastIndexOf('}');
+      if (start === -1 || end === -1) throw new Error('no JSON in dream output');
+      const parsed = JSON.parse(raw.slice(start, end + 1));
+      const written = applyDream(vaultPath, parsed, new Date(), reply.by);
+      experiencesAtLastDream = experienceTitles(vaultPath).length;
+      log({
+        ts: new Date(startedAt).toISOString(), reason, by: reply.by, latencyMs: Date.now() - startedAt,
+        prompt, raw, proposed: proposedCount(parsed), written, outcome: 'ok',
+      });
+      try { if (onDream) onDream({ reason, by: reply.by, written }); } catch (_) { /* never */ }
+      if (written.length) {
+        console.log(`[dream] (${reason}, ${reply.by || 'unknown mind'}) wrote ${written.length} note(s): ` +
+          written.map((w) => `${w.kind} "${w.title}"`).join(', '));
+      }
+      return written;
+    } catch (err) {
+      log({
+        ts: new Date(startedAt).toISOString(), reason, by: reply ? reply.by : null, latencyMs: Date.now() - startedAt,
+        prompt, raw: reply ? reply.text : null, outcome: 'failed', error: err.message,
+      });
+      throw err;
     }
-    return written;
   }
 
   return {
@@ -265,6 +365,8 @@ function createDreamer({ vaultPath, model, intervalMs = 0, ask }) {
       if (busy) return;
       const due = intervalMs > 0 && Date.now() - lastDream >= intervalMs;
       if (!dayBreak && !due) return;
+      if (minNewExperiences > 0 &&
+          experienceTitles(vaultPath).length - experiencesAtLastDream < minNewExperiences) return;
       busy = true;
       lastDream = Date.now();
       dream(dayBreak ? 'day-break' : 'interval')
@@ -276,4 +378,7 @@ function createDreamer({ vaultPath, model, intervalMs = 0, ask }) {
   };
 }
 
-module.exports = { createDreamer, buildDreamPrompt, applyDream, DREAM_PROMPT };
+module.exports = {
+  createDreamer, buildDreamPrompt, applyDream, resolveExperienceLink, experienceTitles,
+  recentExperienceLines, strongestConceptLines, DREAM_PROMPT, DREAM_SCHEMA,
+};

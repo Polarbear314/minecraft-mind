@@ -11,3 +11,6 @@ Agent Brain/
 
 # OS
 .DS_Store
+
+server/
+logs/

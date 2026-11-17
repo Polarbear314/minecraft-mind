@@ -2,6 +2,8 @@
 // object. No vault access and no decision logic here, so it runs identically
 // against a real mineflayer bot or the mock bot in simulate.js.
 const { isHostile, FOOD_ITEMS } = require('../vault/ontologyMap');
+const { borderOf, edgeDistance } = require('./worldBorder');
+const { senseAffordances } = require('./affordances');
 
 const PERCEPTION_RADIUS = 16;
 
@@ -53,6 +55,8 @@ function perceive(bot) {
     health: bot.health,
     food: bot.food,
     isDay: bot.time ? !!bot.time.isDay : true,
+    // 0-24000; dusk begins ~11800, beds work from ~12542, night ends ~23000.
+    timeOfDay: bot.time && Number.isFinite(bot.time.timeOfDay) ? bot.time.timeOfDay : null,
     position: myPos || null,
     nearbyEntities,
     nearbyItems,
@@ -61,6 +65,24 @@ function perceive(bot) {
     inventory: items.map((i) => ({ name: i.name, count: i.count })),
     inventoryFood,
     heldItem: bot.heldItem ? bot.heldItem.name : null,
+    // Blocks to the world border's nearest edge (negative = outside), or null
+    // when there is no border worth minding.
+    // What the world around the body offers it right now (affordances.js).
+    affordances: (() => {
+      try {
+        return senseAffordances(bot);
+      } catch (_) {
+        return null; // a failed glance must never break a tick
+      }
+    })(),
+    // The border's square ({ x, z, half }) or null: lets reflexes tell whether
+    // something they want lies beyond the edge of the world.
+    border: borderOf(bot),
+    borderDistance: (() => {
+      const border = borderOf(bot);
+      if (!border || !myPos) return null;
+      return Math.round(edgeDistance(border, myPos.x, myPos.z) * 10) / 10;
+    })(),
   };
 }
 

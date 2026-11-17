@@ -46,7 +46,12 @@ function logExperience(vaultPath, event) {
 
   fs.mkdirSync(paths.experiencesDir(vaultPath), { recursive: true });
   fs.writeFileSync(file, fm.stringify(data, event.body || event.title), 'utf8');
+  try { if (listener) listener(event.title); } catch (_) { /* a listener must never break a memory */ }
   return { file };
 }
 
-module.exports = { logExperience };
+/** Optional listener (title) => void, called after each memory is written. */
+let listener = null;
+function onExperience(fn) { listener = fn; }
+
+module.exports = { logExperience, onExperience };

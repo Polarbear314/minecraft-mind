@@ -2,6 +2,7 @@
 require('dotenv').config();
 
 const fs = require('fs');
+const path = require('path');
 
 function required(name) {
   const value = process.env[name];
@@ -35,6 +36,9 @@ const config = {
   decisionMode: (process.env.DECISION_MODE || 'rules').trim(),
   anthropicKey: process.env.ANTHROPIC_API_KEY ? process.env.ANTHROPIC_API_KEY.trim() : null,
   llmModel: (process.env.LLM_MODEL || 'claude-haiku-4-5').trim(),
+  // Dreaming is rare and benefits most from deeper reasoning, so it can run on
+  // a stronger model than moment-to-moment decisions (defaults to LLM_MODEL).
+  dreamModel: (process.env.DREAM_MODEL || process.env.LLM_MODEL || 'claude-haiku-4-5').trim(),
   // In claude-code mode, consult Claude at most this often; rules fill the gaps.
   llmMinIntervalMs: intOr('LLM_MIN_INTERVAL_MS', 10000),
   // Dreaming (claude-code mode): also reflect every this-many ms in addition
@@ -42,6 +46,19 @@ const config = {
   dreamIntervalMs: intOr('DREAM_INTERVAL_MS', 0),
   // If set, serve the bot's first-person view in a browser at this port (0 = off).
   viewerPort: intOr('VIEWER_PORT', 0),
+  // Phase 2 world growth: the server's remote console (127.0.0.1 only).
+  rcon: {
+    port: intOr('RCON_PORT', 25575),
+    password: (process.env.RCON_PASSWORD || '').trim() || null,
+  },
+  // claude-code mode: save every consultation (what it saw, the prompt, what
+  // Claude decided, what instinct would have done) as JSON lines here, for
+  // later distillation. Defaults to the repo's logs/ folder; set to 'off' to disable.
+  decisionLogDir: (() => {
+    const v = (process.env.DECISION_LOG_DIR || '').trim();
+    if (v.toLowerCase() === 'off') return null;
+    return v || path.resolve(__dirname, '..', '..', 'logs');
+  })(),
 };
 
 if (config.decisionMode === 'llm' && !config.anthropicKey) {

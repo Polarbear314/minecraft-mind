@@ -17,6 +17,10 @@ const { foundingGoalTitle, subgoalLines } = require('../vault/goalStore');
 const { skillLines } = require('../vault/dreamStore');
 const { currentIntention, MAX_INTENTION_LENGTH } = require('../vault/intentionStore');
 const { decide: ruleDecide } = require('./decide');
+const { DIRECTION_NAMES, MOVE_DIRECTIONS, normalizeDirection } = require('../actions/bodyFrame');
+const { describeAffordances } = require('../perception/affordances');
+const { gapLines } = require('../vault/gapStore');
+const { inheritanceLines } = require('../vault/inheritance');
 
 const VALID_ACTIONS = new Set([
   'flee', 'avoid', 'eat', 'seekFood', 'explore', 'idle',
@@ -25,6 +29,12 @@ const VALID_ACTIONS = new Set([
   // (craft is implemented in actions.js but deliberately NOT exposed —
   // deferred with Henry 2026-07-08 until the raw primitives prove out.)
   'swingAt', 'dig', 'place', 'pickup', 'approach',
+  // Phase 1 of design-learning-from-the-readings.md: a COMPLETE body. dig and
+  // place take a body-relative direction; move, jump, use, equip round out
+  // what the body can do. Still no purposes attached to any of them.
+  'move', 'jump', 'use', 'equip',
+  // Phase 2 (born knowing how things are made): craft a named thing.
+  'craft',
 ]);
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const TIMEOUT_MS = 10000;
@@ -33,11 +43,20 @@ const SYSTEM_PROMPT =
   'You are the mind of MindBot, an agent living in a Minecraft world. Your memories and ' +
   'feelings are given below; they are yours, accumulated through real experience. Choose ' +
   'your next action. You must pick exactly one of: flee (escape a hostile creature), ' +
-  'avoid (move away from a dangerous block or place), eat, seekFood, explore, idle, ' +
-  'swingAt (swing your arm at the nearest creature), dig (break the nearest block you can reach), ' +
-  'place (set one of the things you carry down on the ground), pickup (go to the nearest thing ' +
-  'lying on the ground), approach (walk toward a creature or person you can see — name which one ' +
-  'in "target", otherwise the nearest is chosen). ' +
+  'avoid (move away from a dangerous block or place), ' +
+  'eat (put something you carry in your mouth: name it in "item"; anything may be tried), seekFood, explore, idle, ' +
+  'swingAt (swing your arm at a creature: name which in "target", otherwise the nearest; you keep at it until you choose otherwise), ' +
+  'dig (break a block: give "at" to choose which neighbouring block, otherwise the nearest notable block is chosen), ' +
+  'place (set a carried block down: give "at" to choose where, and optionally "item" for which block), ' +
+  'move (take a few steps; "at" is ahead, behind, left or right), jump, ' +
+  'use (work a block with your hand: give "at", or name the kind of block in "target"), ' +
+  'equip (hold one of the things you carry, named in "item"), ' +
+  'craft (make something from what you carry, named in "item" — some things need a crafting table close by), ' +
+  'pickup (go to the nearest thing lying on the ground), approach (walk toward a creature or person ' +
+  'you can see — name which one in "target", otherwise the nearest is chosen). ' +
+  `"at" is relative to your own body: ${DIRECTION_NAMES.join(', ')} ` +
+  '("below" is the block under your feet, "above" the block over your head, "-up" is head height, ' +
+  '"-down" is the ground beside you). ' +
   'No one has told you what these acts are for or what will come of them; only your own ' +
   'experience can say. Let what your attempts have taught you inform WHICH action you pick, ' +
   'but keep your thought in your own voice: speak from feeling, memory, and your sense of ' +
@@ -57,7 +76,9 @@ const SYSTEM_PROMPT =
   '{"action": "<one of the actions>", "thought": "<one short sentence of reflection, first person, in your own voice>", ' +
   '"intention": "<optional: an undertaking to hold onto>", ' +
   '"say": "<optional: words to speak aloud in chat>", ' +
-  '"target": "<optional, for approach: the name of who to walk toward>"}';
+  '"target": "<optional, for approach/swingAt: which creature or person; for use: what kind of block>", ' +
+  '"at": "<optional, for dig/place/move/use: a direction relative to your body>", ' +
+  '"item": "<optional, for eat/place/equip: which carried thing; for craft: what to make>"}';
 
 function readNote(file) {
   try {
@@ -151,6 +172,18 @@ function buildPrompt(vaultPath, drives, observation) {
     `Your body: health ${observation.health}/20, food ${observation.food}/20, ` +
       `${observation.isDay ? 'daytime' : 'night'}. Everything you carry: ${carried}. ` +
       `Of these, your body knows it can eat: ${food}.`,
+    (() => {
+      const around = describeAffordances(observation.affordances);
+      return around ? `Where you stand: ${around}` : null;
+    })(),
+    (() => {
+      return observation.workspace ? `From the rest of your mind, just now:
+${observation.workspace}` : null;
+    })(),
+    (() => {
+      const gaps = gapLines(vaultPath);
+      return gaps ? `Things you have tried that your body could not do:\n${gaps}` : null;
+    })(),
     '',
     'What you feel about what is around you (from your own memory):',
     feelings(vaultPath, observation),
@@ -165,6 +198,12 @@ function buildPrompt(vaultPath, drives, observation) {
       return strat
         ? `What your own attempts at living have taught you:\n${strat}\n`
         : null;
+    })(),
+    (() => {
+      const born = inheritanceLines(vaultPath);
+      return born ? `What you were born knowing (you don't remember learning it; it is simply how the world works):
+${born}
+` : null;
     })(),
     (() => {
       const skills = skillLines(vaultPath);
@@ -221,13 +260,22 @@ function toAction(parsed, observation) {
   let type = VALID_ACTIONS.has(parsed.action) ? parsed.action : null;
   if (!type) throw new Error(`invalid action "${parsed.action}"`);
   if (type === 'flee' && !observation.nearestHostile) type = 'explore';
-  if (type === 'eat' && observation.inventoryFood.length === 0) type = 'seekFood';
+  // eat: anything carried may be tried (the body learns what goes down); only
+  // with empty hands is there nothing to try.
+  if (type === 'eat' && !(observation.inventory || []).length) type = 'seekFood';
 
-  // Motor primitives need a target (or something carried) to be possible.
+  // Aimed primitives carry a body-relative direction. An AIMED attempt is
+  // passed through even if it may fail: the body tries, and the failure is
+  // registered as a capability gap (the loop closes) instead of being
+  // silently swapped for something else.
+  const at = parsed.at != null ? normalizeDirection(parsed.at) : null;
+  const aimed = (type === 'dig' || type === 'place' || type === 'use') && !!at;
+
+  // Older, unaimed forms need a target (or something carried) to be possible.
   if (type === 'swingAt' && !(observation.nearbyEntities || [])[0]) type = 'explore';
-  if (type === 'dig' && !(observation.nearbyBlocks || []).some((b) => b.position)) type = 'explore';
+  if (type === 'dig' && !aimed && !(observation.nearbyBlocks || []).some((b) => b.position)) type = 'explore';
   if (type === 'pickup' && !(observation.nearbyItems || [])[0]) type = 'explore';
-  if (type === 'place' && !(observation.inventory || []).length) type = 'explore';
+  if (type === 'place' && !aimed && !(observation.inventory || []).length) type = 'explore';
   if (type === 'approach' && !(observation.nearbyEntities || [])[0]) type = 'explore';
 
   // avoid: pick the most plausible thing to move away from — the nearest
@@ -258,13 +306,50 @@ function toAction(parsed, observation) {
   }
   if (type === 'flee') action.target = observation.nearestHostile;
   if (type === 'avoid') action.target = avoidTarget;
-  if (type === 'eat') action.item = observation.inventoryFood[0].name;
-  if (type === 'swingAt') action.target = observation.nearbyEntities[0];
-  if (type === 'dig') {
-    action.target = observation.nearbyBlocks
-      .filter((b) => b.position)
-      .sort((a, b) => (a.distance ?? 99) - (b.distance ?? 99))[0];
+  if (type === 'eat') {
+    const carried = observation.inventory || [];
+    const want = parsed.item ? String(parsed.item).toLowerCase().replace(/\s+/g, '_') : null;
+    const named = want && (carried.find((i) => i.name === want) || carried.find((i) => i.name.includes(want)));
+    const blocks = new Set((observation.affordances && observation.affordances.placeable) || []);
+    const pick = named
+      || (observation.inventoryFood || [])[0]
+      || carried.find((i) => !blocks.has(i.name)) // something that isn't a building block
+      || carried[0];
+    action.item = named ? named.name : want && !named ? want : pick.name; // a named thing not carried fails honestly
   }
+  if (type === 'swingAt') {
+    // Named creature if it matches something perceived, else the nearest.
+    const beings = observation.nearbyEntities;
+    let target = null;
+    if (parsed.target) {
+      const want = String(parsed.target).toLowerCase();
+      target = beings.find((e) => String(e.name).toLowerCase() === want)
+        || beings.find((e) => String(e.name).toLowerCase().includes(want));
+      // The named creature is gone (fled, fell, never was): don't swing at
+      // whatever happens to be nearest instead — that could be a zombie.
+      if (!target) throw new Error(`no ${want} in view to swing at`);
+    }
+    action.target = target || beings[0];
+  }
+  if (type === 'dig') {
+    if (aimed) action.at = at;
+    else {
+      action.target = observation.nearbyBlocks
+        .filter((b) => b.position)
+        .sort((a, b) => (a.distance ?? 99) - (b.distance ?? 99))[0];
+    }
+  }
+  if (type === 'place') {
+    action.at = at || 'ahead';
+    if (parsed.item) action.item = String(parsed.item).toLowerCase().replace(/\s+/g, '_');
+  }
+  if (type === 'move') action.at = MOVE_DIRECTIONS.includes(at) ? at : 'ahead';
+  if (type === 'use') {
+    if (at) action.at = at;
+    else if (parsed.target) action.target = String(parsed.target).toLowerCase().replace(/\s+/g, '_');
+  }
+  if (type === 'craft') action.item = String(parsed.item || parsed.target || '').toLowerCase().replace(/\s+/g, '_') || undefined;
+  if (type === 'equip') action.item = String(parsed.item || parsed.target || '').toLowerCase().replace(/\s+/g, '_');
   if (type === 'pickup') action.target = observation.nearbyItems[0];
   if (type === 'approach') {
     // Named target if it matches something perceived, else the nearest being.

@@ -5,7 +5,11 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "sim": "node src/simulate.js"
+    "sim": "node src/simulate.js",
+    "bakeoff": "node src/tools/dreamBakeoff.js",
+    "brain": "node src/tools/brainView.js",
+    "deepdream": "node src/tools/deepDream.js",
+    "sayvsdo": "node src/tools/sayVsDo.js"
   },
   "license": "MIT",
   "dependencies": {

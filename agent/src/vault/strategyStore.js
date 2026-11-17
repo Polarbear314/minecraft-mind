@@ -17,6 +17,11 @@ const MAX_RECENT_OUTCOMES = 5; // bullet list kept in the note body
 const ACTION_LABELS = {
   flee: 'Fleeing',
   avoid: 'Avoiding Danger',
+  returnInside: 'Returning Inside The Border',
+  move: 'Stepping',
+  jump: 'Jumping',
+  use: 'Working Things',
+  equip: 'Taking Things In Hand',
   eat: 'Eating',
   seekFood: 'Seeking Food',
   explore: 'Exploring',
@@ -30,7 +35,10 @@ const ACTION_LABELS = {
 };
 
 function strategyTitle(actionType, context) {
-  const verb = ACTION_LABELS[actionType] || paths.titleCase(actionType);
+  // Aimed acts are keyed "dig:below": the direction is part of what was tried.
+  const [base, at] = String(actionType).split(':');
+  const label = ACTION_LABELS[base] || paths.titleCase(base);
+  const verb = at ? `${label} ${paths.titleCase(at.replace(/-/g, ' '))}` : label;
   return `${verb} ${context === 'day' ? 'By Day' : 'At Night'}`;
 }
 

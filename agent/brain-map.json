@@ -1,0 +1,10 @@
+{
+  "local": { "model": "gemma3:12b", "host": "http://127.0.0.1:11434" },
+  "cortex": { "provider": "claude", "model": "sonnet", "fallback": "rules" },
+  "hippocampus": { "provider": "auto", "model": "opus", "fallback": "local", "minNewExperiences": 10 },
+  "social": { "provider": "auto", "model": "haiku", "fallback": "local" },
+  "amygdala": { "provider": "local", "everyMs": 3000 },
+  "innerVoice": { "provider": "local", "everyMs": 4000 },
+  "rumination": { "provider": "local", "everyMs": 120000 },
+  "nature": { "bornKnowing": true, "reflexes": true, "growth": true, "startBorder": 128 }
+}

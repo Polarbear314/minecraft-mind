@@ -45,7 +45,7 @@ function listSubgoals(vaultPath) {
  * Write one self-authored subgoal note (from dreaming). Never overwrites:
  * returns null if a note with this title already exists.
  */
-function writeSubgoal(vaultPath, { title, body, servesTitle, timestamp }) {
+function writeSubgoal(vaultPath, { title, body, servesTitle, timestamp, dreamedBy }) {
   const clean = paths.sanitize(title);
   if (!clean) return null;
   const file = paths.goalPath(vaultPath, clean);
@@ -58,14 +58,18 @@ function writeSubgoal(vaultPath, { title, body, servesTitle, timestamp }) {
     status: 'active',
     tags: ['type/goal'],
   };
+  if (dreamedBy) data.dreamed_by = dreamedBy; // which mind dreamed it
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, fm.stringify(data, body || clean), 'utf8');
   return { title: clean, file };
 }
 
 /** Prompt lines for the agent's own subgoals, or null if it has none yet. */
-function subgoalLines(vaultPath, max = 6) {
+function subgoalLines(vaultPath, max = 8) {
+  // Newest first: the goals it most recently set for itself are the live ones
+  // (alphabetical order hid new goals once the list grew past the cap).
   const lines = listSubgoals(vaultPath)
+    .sort((a, b) => String(b.data.given_on || '').localeCompare(String(a.data.given_on || '')))
     .slice(0, max)
     .map((g) => `- ${g.title}: ${String(g.body).trim().replace(/\s+/g, ' ').slice(0, 150)}`);
   return lines.length ? lines.join('\n') : null;

@@ -6,7 +6,7 @@
 // the same action shape, without touching perception, actions, or the vault
 // layer.
 //
-// Priority order: flee > avoid-hazard > eat-or-seek-food > explore > idle.
+// Priority order: stay-inside-border > flee > avoid-hazard > eat-or-seek-food > explore > idle.
 
 const { lookup } = require('../vault/ontologyMap');
 
@@ -16,6 +16,8 @@ const HUNGER_URGENT = 75; // above this, finding food preempts even a lesson wor
 const HEALTH_SAFE = 10; // at/below this, tend to survival — no dawdling to watch someone
 const AVOID_RANGE = 5; // blocks: hazard blocks closer than this get walked away from
 const EXPERIMENT_CHANCE = 0.15; // when curious and calm: odds of fiddling instead of wandering
+const TASTE_CHANCE = 0.25; // when starving with no known food: odds of trying something carried
+const BORDER_MARGIN = 4; // blocks: this close to the world border's edge, walk back inside
 
 /** The nearest person in view — a possible teacher to watch. */
 function nearestPlayer(observation) {
@@ -42,6 +44,17 @@ function experiment(observation) {
   if ((observation.inventory || []).length) {
     options.push({ type: 'place' });
   }
+  // The complete body (Phase 1): aimed digging and placing anywhere the
+  // hand can reach, jumping, working a door or bed in view. Babbling over the
+  // whole space is how an unplanned shelter can happen by accident.
+  const a = observation.affordances;
+  const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+  if (a && a.canDig && a.canDig.length) options.push({ type: 'dig', at: pick(a.canDig) });
+  if (a && a.canPlace && a.canPlace.length) options.push({ type: 'place', at: pick(a.canPlace) });
+  options.push({ type: 'jump' });
+  for (const kind of ['door', 'bed', 'trapdoor', 'gate']) {
+    if (a && a[kind]) options.push({ type: 'use', target: kind });
+  }
   return options.length ? options[Math.floor(Math.random() * options.length)] : null;
 }
 
@@ -52,7 +65,27 @@ function experiment(observation) {
  * opts.experimentChance overrides EXPERIMENT_CHANCE (the sim passes 0 so its
  * scenario stays deterministic).
  */
-function decide(drives, observation, { experimentChance = EXPERIMENT_CHANCE } = {}) {
+function decide(drives, observation, { experimentChance = EXPERIMENT_CHANCE, tasteChance = TASTE_CHANCE } = {}) {
+  // Brainstem: the border hurts. Outside it (or about to be), nothing else
+  // matters — not even a zombie, which can be fled from once back inside.
+  if (observation.borderDistance != null && observation.borderDistance <= BORDER_MARGIN) {
+    return { type: 'returnInside' };
+  }
+
+  // Phase 2 reflexes (born knowing; reflexes.js), when the loop provides them.
+  const reflexes = observation.reflexes || null;
+  if (reflexes) {
+    const c = reflexes.creeper(observation);
+    if (c) return c;
+    // From dusk, sheltering comes before running: once closed in, stay (fleeing
+    // out of a hole is how phase 1 kept dying); while digging in, only a
+    // hostile right on top of us sends us running.
+    const s = reflexes.shelter(observation);
+    const close = observation.nearestHostile && observation.nearestHostile.distance != null &&
+      observation.nearestHostile.distance <= 3;
+    if (s && (s.reason || !close)) return s;
+  }
+
   if (drives.fear > FEAR_THRESHOLD && observation.nearestHostile) {
     return { type: 'flee', target: observation.nearestHostile };
   }
@@ -75,6 +108,16 @@ function decide(drives, observation, { experimentChance = EXPERIMENT_CHANCE } = 
     if (observation.inventoryFood.length > 0) {
       return { type: 'eat', item: observation.inventoryFood[0].name };
     }
+    // Starving with nothing known to be food: sometimes put a carried thing
+    // (not a building block, and not something that already wouldn't go
+    // down) in the mouth. What goes down is learned (bodyKnowledge.js).
+    const blocks = new Set((observation.affordances && observation.affordances.placeable) || []);
+    const untried = (observation.inventory || []).filter((i) => !blocks.has(i.name) && !(observation.inedible || []).includes(i.name));
+    const h = reflexes && reflexes.hunt(drives, observation);
+    if (h) return h; // born knowing: animals give meat
+    if (untried.length && Math.random() < tasteChance) {
+      return { type: 'eat', item: untried[Math.floor(Math.random() * untried.length)].name };
+    }
     return { type: 'seekFood' };
   }
 
@@ -93,6 +136,8 @@ function decide(drives, observation, { experimentChance = EXPERIMENT_CHANCE } = 
     if (observation.inventoryFood.length > 0) {
       return { type: 'eat', item: observation.inventoryFood[0].name };
     }
+    const h = reflexes && reflexes.hunt(drives, observation);
+    if (h) return h;
     return { type: 'seekFood' };
   }
 
@@ -107,4 +152,4 @@ function decide(drives, observation, { experimentChance = EXPERIMENT_CHANCE } = 
   return { type: 'idle' };
 }
 
-module.exports = { decide, FEAR_THRESHOLD, HUNGER_THRESHOLD };
+module.exports = { decide, FEAR_THRESHOLD, HUNGER_THRESHOLD, BORDER_MARGIN };

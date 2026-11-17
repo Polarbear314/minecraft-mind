@@ -15,7 +15,16 @@ const { updateCurrentState } = require('./vault/stateStore');
 const { INTERESTING_BLOCKS, lookup } = require('./vault/ontologyMap');
 const { titleCase, conceptPath } = require('./vault/paths');
 const { foundingGoalTitle } = require('./vault/goalStore');
-const { setIntention } = require('./vault/intentionStore');
+const { setIntention, expireStaleIntention } = require('./vault/intentionStore');
+const { recordGap } = require('./vault/gapStore');
+const { knownEdible, knownInedible, learnEdible } = require('./vault/bodyKnowledge');
+const { workspaceDigest } = require('./brain/regions');
+const { EDIBLE_BY_NATURE } = require('./vault/inheritance');
+
+/** Strategy key: aimed acts carry their direction ("dig:below"). */
+function actionKey(action) {
+  return action.at ? `${action.type}:${action.at}` : action.type;
+}
 
 const DAMAGE_ATTRIBUTION_RANGE = 4; // blocks: a hostile this close gets blamed for damage
 const THREAT_RANGE = 10; // blocks: only hostiles this close raise the Fear drive
@@ -99,6 +108,17 @@ function currentBiome(bot) {
 async function tick(bot, drives, vaultPath, opts = {}) {
   const now = new Date();
   const observation = perceive(bot);
+  // What the body has eaten successfully before counts as food from now on
+  // (bodyKnowledge.js) — edibility is learned, not only a starting list.
+  const learnedFood = knownEdible(vaultPath);
+  if (opts.bornKnowing) for (const f of EDIBLE_BY_NATURE) learnedFood.add(f);
+  observation.inedible = [...knownInedible(vaultPath)];
+  if (learnedFood.size) {
+    const known = new Set((observation.inventoryFood || []).map((i) => i.name));
+    for (const i of observation.inventory || []) {
+      if (learnedFood.has(i.name) && !known.has(i.name)) observation.inventoryFood.push(i);
+    }
+  }
 
   // Damage detection: compare health against last tick.
   const prev = lastHealth.has(bot) ? lastHealth.get(bot) : observation.health;
@@ -152,15 +172,52 @@ async function tick(bot, drives, vaultPath, opts = {}) {
   // Update drives, decide, and ACT — before any vault writes. The action is
   // a pathfinder goal, so the body is already moving while everything below
   // journals what happened. The bot must never stand still to write its diary.
+  // The parallel brain (blackboard.js): the amygdala's latest gut feeling feeds
+  // fear, and the thalamus passes the rest of the mind's chatter up to the
+  // cortex with this observation.
+  const bb = opts.blackboard || null;
+  // Phase 2: survival reflexes ride on the observation so every caller of the
+  // rule layer (instinct, the Claude layer's fallback) gets them.
+  if (opts.reflexes) observation.reflexes = opts.reflexes;
+  const gut = bb ? bb.get('gut', 10000) : null;
+  if (bb) {
+    observation.workspace = workspaceDigest(bb);
+  }
   drives.update({
     food: observation.food,
     tookDamage,
     hostilesNearby: observation.nearbyEntities.filter((e) => e.hostile && e.distance <= THREAT_RANGE).length,
     isDark: !observation.isDay,
     newConceptCount,
+    gutThreat: gut ? gut.data.threat : 0,
   });
   const action = await (opts.decide || decide)(drives, observation);
-  await execute(bot, action);
+  // The body reports what actually happened ({ ok, did } / { ok, reason }).
+  let result = null;
+  try {
+    result = await execute(bot, action);
+  } catch (err) {
+    result = { ok: false, reason: `something went wrong in my body (${String(err && err.message || err).slice(0, 60)})` };
+  }
+  if (result) action.result = result;
+
+  // Post what this tick saw and did, and let the body's regions fire.
+  if (bb) {
+    try {
+      const seen = observation.nearbyEntities.length + (observation.nearbyBlocks || []).length;
+      bb.post('occipital', 'percept', { observation, drives: drives.levels(), action },
+        seen ? `sees ${observation.nearbyEntities.slice(0, 3).map((e) => e.name).join(', ') || 'blocks'}` : 'nothing in view');
+      const a = observation.affordances;
+      if (a) bb.fire('parietal', a.enclosed ? 'enclosed' : `${a.skyOverhead ? 'open sky' : 'under cover'}, ${a.walls} sides closed`);
+      const d = drives.levels();
+      bb.fire('hypothalamus', `hunger ${Math.round(d.hunger)} · fear ${Math.round(d.fear)} · curiosity ${Math.round(d.curiosity)}`);
+      bb.fire('motor', `${action.type}${action.at ? ' ' + action.at : ''}${result ? (result.ok ? ' ✓' : ` ✗ ${result.reason}`) : ''}`);
+      if (!action.source || action.source === 'instinct') bb.fire('brainstem', `instinct: ${action.type}`);
+      if (['explore', 'seekFood', 'flee', 'approach', 'move', 'avoid', 'returnInside', 'swingAt', 'pickup'].includes(action.type)) {
+        bb.fire('cerebellum', `moving: ${action.type}`);
+      }
+    } catch (_) { /* the blackboard must never break the tick */ }
+  }
 
   // Speaking: if the decision carried words, say them aloud in chat for
   // whoever is present. Fire-and-forget — a lost word must not break the tick.
@@ -270,6 +327,24 @@ async function tick(bot, drives, vaultPath, opts = {}) {
     });
   }
 
+  // Capability gaps: an attempt the body could not carry out is registered,
+  // not silently dropped (Lucken's registration; Haugeland's "the world
+  // forbids X" vs "I can't yet do X"). The first of each kind is a memory.
+  if (result && result.ok === false) {
+    const gap = recordGap(vaultPath, action, result.reason, now);
+    if (gap && gap.isFirst) {
+      logExperience(vaultPath, {
+        title: gap.title,
+        timestamp: now,
+        involves: [],
+        locatedIn,
+        deltas: {},
+        valenceBand: 'neutral',
+        body: `I tried to ${action.type}${action.at ? ` ${action.at.replace(/-/g, ' ')}` : ''}, but ${result.reason}.`,
+      });
+    }
+  }
+
   // Things gained since last tick become item encounters. First-time holdings
   // get an Experience — the moment the world put something new in its hands,
   // whether dug free, picked up, or crafted into being.
@@ -288,8 +363,13 @@ async function tick(bot, drives, vaultPath, opts = {}) {
     }
   }
 
+  // Eating teaches the body what goes down (and what doesn't).
+  if (action.type === 'eat' && action.item && result) {
+    if (result.ok) learnEdible(vaultPath, action.item, true, now);
+    else if (/would not go down/.test(String(result.reason))) learnEdible(vaultPath, action.item, false, now);
+  }
   // Eating is itself an encounter with a Food concept (positive valence).
-  if (action.type === 'eat') {
+  if (action.type === 'eat' && action.item && (!result || result.ok)) {
     const eaten = recordEncounter(vaultPath, 'item', action.item, { timestamp: now, locatedIn });
     if (eaten.isFirstEncounter) {
       logExperience(vaultPath, {
@@ -317,7 +397,7 @@ async function tick(bot, drives, vaultPath, opts = {}) {
     trackers.set(bot, tracker);
   }
   const outcome = tracker.track({
-    actionType: action.type,
+    actionType: actionKey(action),
     context: observation.isDay ? 'day' : 'night',
     observation,
     fear: drives.fear,
@@ -366,6 +446,28 @@ async function tick(bot, drives, vaultPath, opts = {}) {
   // abandoned (empty string) — persist it. Absent field = keep holding it.
   if (action.intention !== undefined) {
     setIntention(vaultPath, action.intention, now);
+  }
+  // Intention budget: an undertaking pursued too long without coming to pass
+  // is let go, and the letting-go is remembered — so a plan the body can't
+  // carry out can't hold the mind forever.
+  const expired = expireStaleIntention(vaultPath, now, opts.intentionBudgetMs);
+  if (expired) {
+    logExperience(vaultPath, {
+      title: 'Let Go Of An Undertaking',
+      timestamp: now,
+      involves: [],
+      locatedIn,
+      deltas: {},
+      valenceBand: 'neutral',
+      body: `I had set out to: "${expired.text}". It did not come to pass, and I let it go.`,
+    });
+  }
+
+  // The body's journal: every tick, and the grading of each night.
+  if (opts.journal) {
+    try {
+      opts.journal.observe({ observation, action, tookDamage, drives: drives.levels(), now, locatedIn });
+    } catch (_) { /* the journal must never break the tick */ }
   }
 
   // Dreaming: give the background reflection pass a chance to start. maybe()

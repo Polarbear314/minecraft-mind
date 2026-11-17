@@ -9,7 +9,7 @@ const path = require('path');
 const fm = require('./frontmatter');
 const paths = require('./paths');
 
-function writeAbstractNote(file, className, tag, { title, body, learnedFrom, timestamp }) {
+function writeAbstractNote(file, className, tag, { title, body, learnedFrom, timestamp, dreamedBy }) {
   const clean = paths.sanitize(title);
   if (!clean) return null;
   if (fs.existsSync(file)) return null; // never overwrite an existing note
@@ -17,6 +17,8 @@ function writeAbstractNote(file, className, tag, { title, body, learnedFrom, tim
     is_a: fm.link(className),
     dreamed_on: (timestamp || new Date()).toISOString(),
   };
+  // Which mind dreamed it ("claude:opus", "local:<model>"): filterable in Obsidian.
+  if (dreamedBy) data.dreamed_by = dreamedBy;
   if (learnedFrom && learnedFrom.length) data.learned_from = learnedFrom.map(fm.link);
   data.tags = [tag];
   fs.mkdirSync(path.dirname(file), { recursive: true });

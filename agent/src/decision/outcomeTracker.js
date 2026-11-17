@@ -15,6 +15,11 @@ const WINDOW_TICKS = 6;
 const VERB_PAST = {
   flee: 'Fled',
   avoid: 'Avoided danger',
+  returnInside: 'Walked back inside the border',
+  move: 'Stepped',
+  jump: 'Jumped',
+  use: 'Worked something',
+  equip: 'Took something in hand',
   eat: 'Ate',
   seekFood: 'Sought food',
   explore: 'Explored',
@@ -83,7 +88,8 @@ function createOutcomeTracker(windowTicks = WINDOW_TICKS) {
     }
     if (!parts.length) parts.push('nothing notable happened');
 
-    const verb = VERB_PAST[p.actionType] || p.actionType;
+    const [base, at] = String(p.actionType).split(':');
+    const verb = `${VERB_PAST[base] || base}${at ? ` ${at.replace(/-/g, ' ')}` : ''}`;
     const when = p.context === 'day' ? 'by day' : 'at night';
     return {
       actionType: p.actionType,

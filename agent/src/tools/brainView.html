@@ -1,0 +1,597 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MindBot Brain</title>
+<style>
+  :root {
+    --bg: #fbfaf7; --ink: #23262d; --muted: #6b7280; --line: #c9c4bb; --card: #ffffff; --edge: #e7e3dc;
+    --frontal: #3b82f6; --motor: #1d4ed8; --parietal: #22c55e; --occipital: #f2c230; --temporal: #8b5cf6;
+    --core: #f1e2d2; --callosum: #fbf3ea; --thalamus: #fb923c; --hypo: #f472b6; --amyg: #ef4444;
+    --hippo: #14b8a6; --stem: #e2b07f; --cereb: #f4a582; --ok: #16a34a; --bad: #dc2626; --rest: #9ca3af;
+    --broca: #06b6d4;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 28px 6px; flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 22px; letter-spacing: .14em; font-weight: 800; }
+  h1 span { color: var(--muted); font-weight: 600; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; background: var(--card); border: 1px solid var(--edge); font-weight: 600; font-size: 13px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--rest); }
+  .dot.on { background: var(--ok); box-shadow: 0 0 0 4px rgba(22,163,74,.15); animation: beat 1.6s infinite; }
+  .vitals { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
+  .bar { width: 120px; height: 9px; border-radius: 6px; background: #ece8e1; overflow: hidden; display: inline-block; vertical-align: middle; margin-left: 6px; }
+  .bar > i { display: block; height: 100%; border-radius: 6px; transition: width .6s; }
+  main { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(300px, 1fr); gap: 18px; padding: 8px 24px 12px; align-items: start; }
+  body.eyes-big main { grid-template-columns: minmax(0, 1.1fr) minmax(300px, 1.25fr); }
+  .eyesFrame { position: relative; aspect-ratio: 16 / 10; border-radius: 12px; overflow: hidden; background: #1f2937; }
+  .eyesFrame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  .eyesOff { position: absolute; inset: 0; display: grid; place-items: center; color: #d1d5db; font-size: 13px; text-align: center; padding: 16px; }
+  .eyesOff[hidden] { display: none; }
+  #eyesSize { font: 600 12px system-ui, sans-serif; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--edge); background: #f7f5f1; cursor: pointer; }
+  #eyesSize:hover { background: #efebe4; }
+  @media (max-width: 980px) { main { grid-template-columns: 1fr; } }
+  .stage { background: var(--card); border: 1px solid var(--edge); border-radius: 18px; padding: 6px; }
+  svg { width: 100%; height: auto; display: block; }
+  .region { cursor: pointer; transition: fill-opacity .8s, filter .8s, stroke-width .2s; stroke: rgba(35,38,45,.18); stroke-width: 1.2; }
+  .region:hover, .region.sel { stroke: var(--ink); stroke-width: 2.6; }
+  .region.notbuilt { stroke-dasharray: 5 4; stroke: #777; }
+  .region.resting { filter: grayscale(.85); }
+  .region.fail { stroke: var(--bad) !important; stroke-width: 3; }
+  .pulse { animation: pulse 1.4s ease-out 1; }
+  @keyframes pulse { 0% { filter: brightness(1.6) drop-shadow(0 0 14px rgba(255,255,255,.95)); } 100% { filter: none; } }
+  @keyframes beat { 50% { box-shadow: 0 0 0 7px rgba(22,163,74,.05); } }
+  .label { cursor: pointer; }
+  .label .name { font: 800 12.5px system-ui, sans-serif; letter-spacing: .08em; fill: var(--ink); }
+  .label .role { font: 600 11.5px system-ui, sans-serif; fill: var(--muted); }
+  .label .live { font: 500 11px system-ui, sans-serif; fill: #374151; }
+  .label:hover .name, .label.sel .name { fill: #000; text-decoration: underline; }
+  .leader { stroke: #9a948a; stroke-width: 1; fill: none; }
+  .anchor { fill: #23262d; }
+  .folia { fill: none; stroke: rgba(255,255,255,.55); stroke-width: 2.2; pointer-events: none; }
+  .deco { pointer-events: none; }
+  .flash { animation: flash 1.8s ease-out 1; }
+  @keyframes flash { 0% { background: rgba(220,38,38,.35); } 100% { background: transparent; } }
+  aside { display: flex; flex-direction: column; gap: 14px; }
+  .card { background: var(--card); border: 1px solid var(--edge); border-radius: 16px; padding: 16px 18px; }
+  .card h2 { margin: 0 0 2px; font-size: 18px; display: flex; align-items: center; gap: 10px; }
+  .swatch { width: 14px; height: 14px; border-radius: 4px; flex: none; }
+  .sub { color: var(--muted); font-weight: 600; font-size: 13px; margin-bottom: 10px; }
+  .card p { margin: 6px 0; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; }
+  .kv b { color: var(--muted); font-weight: 600; }
+  ul.tight { margin: 6px 0; padding-left: 18px; }
+  ul.tight li { margin: 3px 0; }
+  .quote { font-style: italic; border-left: 3px solid var(--edge); padding: 2px 0 2px 10px; margin: 8px 0; }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 6px; background: #f2efe9; font-size: 12px; margin: 1px 2px; }
+  .tag.bad { background: #fde8e8; color: #991b1b; } .tag.good { background: #e7f6ec; color: #166534; }
+  .note { color: var(--muted); font-size: 12.5px; }
+  .stream { padding: 0 24px 24px; }
+  .stream .card { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 18px; }
+  @media (max-width: 980px) { .stream .card { grid-template-columns: 1fr; } }
+  .stream ol { margin: 0; padding-left: 20px; } .stream li { margin: 4px 0; }
+  .stream li:first-child { font-weight: 600; }
+  .mini { display: flex; gap: 6px; flex-wrap: wrap; }
+  .meter { height: 8px; background: #ece8e1; border-radius: 6px; overflow: hidden; }
+  .meter > i { display: block; height: 100%; }
+  .drive { display: grid; grid-template-columns: 74px 1fr 30px; align-items: center; gap: 8px; font-size: 13px; margin: 6px 0; }
+  .spark { animation: spark .7s ease-out 1; }
+  @keyframes spark { 0% { filter: brightness(1.55) drop-shadow(0 0 10px rgba(255,255,255,.95)); } 100% { filter: none; } }
+  ul.feed { list-style: none; margin: 6px 0 0; padding: 0; max-height: 230px; overflow: hidden; font-size: 12.5px; }
+  ul.feed li { display: grid; grid-template-columns: 10px 112px 1fr; gap: 8px; align-items: baseline; padding: 3px 0; border-bottom: 1px dashed #eee8de; }
+  ul.feed li i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  ul.feed li b { font-weight: 700; color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; }
+  ul.feed li span { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  ul.feed li.new { animation: rowin .6s ease-out 1; }
+  @keyframes rowin { from { background: #fff7d6; } to { background: transparent; } }
+  .eeg svg { width: 100%; height: 300px; }
+  .eeg text { font: 700 11px system-ui, sans-serif; fill: var(--muted); letter-spacing: .04em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ANATOMY OF MINDBOT'S BRAIN <span>· LIVE</span></h1>
+  <div class="vitals">
+    <span class="pill"><span class="dot" id="dot"></span><span id="status">connecting…</span></span>
+    <span>health<span class="bar"><i id="hp" style="background:#ef4444;width:0"></i></span> <b id="hpv"></b></span>
+    <span>food<span class="bar"><i id="fd" style="background:#d97706;width:0"></i></span> <b id="fdv"></b></span>
+    <span id="sky"></span>
+    <span id="deaths"></span>
+  </div>
+</header>
+
+<main>
+  <div class="stage" id="stage">
+    <svg viewBox="0 0 1080 690" role="img" aria-label="Sagittal diagram of MindBot's brain, each region showing live activity">
+      <defs>
+        <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+          <feGaussianBlur stdDeviation="7" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <linearGradient id="shade" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#fff" stop-opacity=".28"/><stop offset="1" stop-color="#000" stop-opacity=".10"/>
+        </linearGradient>
+      </defs>
+
+      <g transform="translate(60,10)">
+        <!-- outer lobes -->
+        <path class="region" data-r="frontal" fill="var(--frontal)" d="M170,370 C125,255 200,125 350,92 C410,78 455,70 500,70 L487,150 L468,262 C420,290 380,312 350,340 C310,372 275,396 250,418 C210,410 180,398 170,370 Z"/>
+        <path class="region" data-r="parietal" fill="var(--parietal)" d="M500,70 C600,66 672,88 722,118 L676,198 C620,240 530,262 468,262 L487,150 Z"/>
+        <path class="region" data-r="occipital" fill="var(--occipital)" d="M722,118 C820,170 862,268 842,350 C832,398 792,428 752,433 L702,338 L676,198 Z"/>
+        <path class="region" data-r="temporal" fill="var(--temporal)" d="M468,262 C530,262 620,240 676,198 L702,338 L752,433 L662,428 C622,438 582,453 542,478 C482,508 392,513 332,478 C292,453 277,428 250,418 C275,396 310,372 350,340 C380,312 420,290 468,262 Z"/>
+        <!-- gyri hints -->
+        <g class="deco" fill="none" stroke="rgba(255,255,255,.35)" stroke-width="2.4" stroke-linecap="round">
+          <path d="M215,300 C240,250 230,200 270,165"/><path d="M290,130 C320,170 300,215 330,245"/><path d="M380,100 C395,140 375,185 410,215"/>
+          <path d="M560,85 C570,120 545,160 580,190"/><path d="M640,105 C640,140 615,165 640,190"/>
+          <path d="M770,180 C790,230 780,270 800,320"/><path d="M380,440 C430,430 470,450 520,440"/><path d="M590,300 C630,330 640,370 690,390"/>
+        </g>
+        <!-- inner medial surface -->
+        <path class="deco" fill="var(--core)" stroke="rgba(35,38,45,.15)" d="M360,315 C362,235 480,185 585,195 C660,203 700,262 680,330 C662,390 585,410 525,410 C445,410 360,385 360,315 Z"/>
+        <!-- corpus callosum -->
+        <path class="region" data-r="callosum" fill="none" stroke-linecap="round" style="stroke:var(--callosum);stroke-width:20" d="M392,302 C398,232 528,205 620,228 C668,240 684,282 660,312"/>
+        <path class="deco" fill="none" stroke="rgba(35,38,45,.18)" stroke-width="1.2" d="M383,302 C388,222 528,193 624,218 C680,232 696,284 668,318"/>
+        <!-- brainstem -->
+        <path class="region" data-r="brainstem" fill="var(--stem)" d="M512,330 C506,400 522,470 535,600 L580,600 C574,505 574,410 568,330 Z"/>
+        <ellipse class="region" data-r="brainstem" fill="var(--stem)" cx="556" cy="452" rx="37" ry="31"/>
+        <rect class="deco" x="538" y="598" width="40" height="64" rx="16" fill="var(--stem)" opacity=".75"/>
+        <!-- cerebellum -->
+        <path class="region" data-r="cerebellum" fill="var(--cereb)" d="M620,440 C690,420 790,438 812,492 C828,545 762,585 680,580 C628,575 594,545 590,508 C587,476 598,452 620,440 Z"/>
+        <g class="folia">
+          <path d="M610,470 C670,452 760,460 795,495"/><path d="M604,498 C670,482 765,490 805,520"/><path d="M612,528 C670,515 750,522 790,548"/><path d="M632,556 C680,548 735,553 760,568"/>
+        </g>
+        <!-- thalamus, hypothalamus, pituitary -->
+        <ellipse class="region" data-r="thalamus" fill="var(--thalamus)" cx="532" cy="298" rx="44" ry="27"/>
+        <ellipse class="region" data-r="hypothalamus" fill="var(--hypo)" cx="478" cy="346" rx="29" ry="16"/>
+        <path class="deco" d="M466,360 L456,378" stroke="var(--hypo)" stroke-width="5"/><circle class="deco" cx="452" cy="386" r="9" fill="var(--hypo)" opacity=".8"/>
+        <!-- amygdala, hippocampus -->
+        <ellipse class="region" data-r="amygdala" fill="var(--amyg)" cx="415" cy="414" rx="18" ry="12"/>
+        <path class="region" data-r="hippocampus" fill="none" stroke-linecap="round" style="stroke:var(--hippo);stroke-width:15" d="M432,440 C452,464 490,468 506,442"/>
+        <!-- Broca's area: inner speech (the inner voice, on the local model) -->
+        <ellipse class="region" data-r="broca" fill="var(--broca)" cx="292" cy="296" rx="38" ry="24"/>
+        <!-- motor strip -->
+        <path class="region" data-r="motor" fill="none" stroke-linecap="round" style="stroke:var(--motor);stroke-width:15" d="M500,74 L487,150 L478,214"/>
+        <!-- shading -->
+        <path class="deco" fill="url(#shade)" d="M170,370 C125,255 200,125 350,92 C460,68 640,70 722,118 C820,170 862,268 842,350 C832,398 792,428 752,433 L662,428 C622,438 582,453 542,478 C482,508 392,513 332,478 C292,453 277,428 250,418 C210,410 180,398 170,370 Z"/>
+      </g>
+
+      <!-- labels: [region, x, y, anchorX, anchorY, side] (anchors in brain coords + translate) -->
+      <g id="labels"></g>
+    </svg>
+  </div>
+
+  <aside>
+    <div class="card eyes">
+      <h2 style="font-size:15px;justify-content:space-between">
+        <span>Through its eyes <span class="note">(occipital lobe, live)</span></span>
+        <button id="eyesSize" type="button">Bigger</button>
+      </h2>
+      <div class="eyesFrame">
+        <iframe id="eyesView" title="MindBot's first-person view" loading="lazy"></iframe>
+        <div class="eyesOff" id="eyesOff">The view appears while the agent is running.</div>
+      </div>
+    </div>
+    <div class="card" id="detail"></div>
+    <div class="card">
+      <h2 style="font-size:15px">Firing now <span class="note">(every region, as it fires)</span></h2>
+      <ul class="feed" id="feed"></ul>
+    </div>
+    <div class="card">
+      <h2 style="font-size:15px">The drives <span class="note">(hypothalamus)</span></h2>
+      <div id="drives"></div>
+    </div>
+  </aside>
+</main>
+
+<section class="stream">
+  <div class="card eeg">
+    <h2 style="font-size:15px">Brain activity — the last 60 seconds <span class="note">(each mark is one firing; every region runs in parallel)</span></h2>
+    <svg id="eeg" viewBox="0 0 1000 300" preserveAspectRatio="none" aria-label="Spike raster of each region's firing over the last minute"></svg>
+  </div>
+</section>
+
+<section class="stream">
+  <div class="card">
+    <div>
+      <h2 style="font-size:15px">Stream of thought <span class="note">(what the cortex was thinking, newest first)</span></h2>
+      <ol id="thoughts"></ol>
+    </div>
+    <div>
+      <h2 style="font-size:15px">Said aloud</h2>
+      <ul class="tight" id="said"></ul>
+      <h2 style="font-size:15px;margin-top:12px">Standing intention</h2>
+      <p id="intention" class="quote"></p>
+    </div>
+  </div>
+</section>
+
+<script>
+const REGIONS = {
+  frontal:     { name: 'FRONTAL LOBE', role: 'Cortex · Claude decides', color: 'var(--frontal)', label: [22, 70, 265, 175] },
+  motor:       { name: 'MOTOR CORTEX', role: 'The body acts', color: 'var(--motor)', label: [380, 26, 557, 112] },
+  parietal:    { name: 'PARIETAL LOBE', role: 'Body sense · affordances', color: 'var(--parietal)', label: [915, 60, 665, 150] },
+  occipital:   { name: 'OCCIPITAL LOBE', role: 'Vision · what it sees', color: 'var(--occipital)', label: [915, 330, 865, 300] },
+  temporal:    { name: 'TEMPORAL LOBE', role: 'Long-term memory · the vault', color: 'var(--temporal)', label: [22, 560, 415, 478] },
+  callosum:    { name: 'CORPUS CALLOSUM', role: 'Brain map · who runs what', color: 'var(--callosum)', label: [915, 160, 677, 230] },
+  thalamus:    { name: 'THALAMUS', role: 'Routes signals to the cortex', color: 'var(--thalamus)', label: [915, 245, 633, 300] },
+  broca:       { name: "BROCA'S AREA", role: 'Inner voice · Gemma, always on', color: 'var(--broca)', label: [22, 178, 352, 306] },
+  hypothalamus:{ name: 'HYPOTHALAMUS', role: 'Drives · hunger, fear, curiosity', color: 'var(--hypo)', label: [22, 285, 528, 356] },
+  amygdala:    { name: 'AMYGDALA', role: 'Fear · what feels dangerous', color: 'var(--amyg)', label: [22, 380, 475, 424] },
+  hippocampus: { name: 'HIPPOCAMPUS', role: 'Dreaming · memory into belief', color: 'var(--hippo)', label: [22, 470, 525, 460] },
+  brainstem:   { name: 'BRAINSTEM', role: 'Reflexes · instinct', color: 'var(--stem)', label: [915, 600, 615, 540] },
+  cerebellum:  { name: 'CEREBELLUM', role: 'Movement · learned skills', color: 'var(--cereb)', label: [915, 470, 845, 520] },
+};
+let selected = 'frontal';
+let S = null;
+const seen = { decision: null, dream: null, death: null, tickTs: null, fires: {} };
+// Blackboard region names -> regions drawn here.
+const LIVE_KEY = { innerVoice: 'broca' };
+const viewKey = (name) => LIVE_KEY[name] || name;
+const EEG_ORDER = ['brainstem', 'motor', 'occipital', 'parietal', 'hypothalamus', 'cerebellum', 'amygdala', 'broca', 'frontal', 'thalamus', 'hippocampus', 'temporal', 'callosum'];
+/** Live firing info for a drawn region, or null. */
+function liveOf(s, key) {
+  if (!s || !s.live) return null;
+  const name = Object.keys(LIVE_KEY).find((k) => LIVE_KEY[k] === key) || key;
+  return s.live.regions[name] || null;
+}
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const ago = (ts) => {
+  if (!ts) return 'never';
+  const s = Math.max(0, Math.round((Date.now() - Date.parse(ts)) / 1000));
+  if (s < 60) return `${s}s ago`; if (s < 3600) return `${Math.round(s / 60)} min ago`; return `${Math.round(s / 3600)} h ago`;
+};
+const clock = (ts) => ts ? new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—';
+const pretty = (s) => String(s ?? '').replace(/_/g, ' ');
+const pct = (a, b) => (b ? Math.round((100 * a) / b) : 0);
+
+// ---- labels with leader lines, like the anatomy poster
+function buildLabels() {
+  const g = $('labels');
+  const ns = 'http://www.w3.org/2000/svg';
+  for (const [key, r] of Object.entries(REGIONS)) {
+    const [x, y, ax, ay] = r.label;
+    const left = x < 500;
+    const grp = document.createElementNS(ns, 'g');
+    grp.setAttribute('class', 'label'); grp.dataset.r = key;
+    const tx = left ? x : x;
+    const lineFromX = left ? x + 150 : x - 8;
+    const leader = document.createElementNS(ns, 'path');
+    leader.setAttribute('class', 'leader');
+    leader.setAttribute('d', `M${lineFromX},${y + 4} L${ax},${ay}`);
+    grp.appendChild(leader);
+    const dot = document.createElementNS(ns, 'circle');
+    dot.setAttribute('class', 'anchor'); dot.setAttribute('cx', ax); dot.setAttribute('cy', ay); dot.setAttribute('r', 3);
+    grp.appendChild(dot);
+    for (const [cls, dy, txt] of [['name', 0, r.name], ['role', 16, r.role], ['live', 31, '']]) {
+      const t = document.createElementNS(ns, 'text');
+      t.setAttribute('class', cls); t.setAttribute('x', tx); t.setAttribute('y', y + dy);
+      t.setAttribute('text-anchor', 'start');
+      t.textContent = txt;
+      if (cls === 'live') t.dataset.live = key;
+      grp.appendChild(t);
+    }
+    grp.addEventListener('click', () => select(key));
+    g.appendChild(grp);
+  }
+  // In the poster, motor's label sits above the brain: line from its text start.
+  document.querySelectorAll('.region').forEach((el) => el.addEventListener('click', () => select(el.dataset.r)));
+}
+
+function select(key) {
+  selected = key;
+  document.querySelectorAll('.region, .label').forEach((el) => el.classList.toggle('sel', el.dataset.r === key));
+  renderDetail();
+}
+
+// ---- activity: how lit each region is (0..1), from live state
+function activity(s) {
+  const t = s.tick || {};
+  const d = (t.drives) || {};
+  const act = t.action || {};
+  const moving = ['explore', 'seekFood', 'flee', 'approach', 'move', 'avoid', 'returnInside', 'swingAt', 'pickup'].includes(act.type);
+  const decAge = s.decision ? (Date.now() - Date.parse(s.decision.ts)) / 1000 : 1e9;
+  const dreamAge = s.dream ? (Date.now() - Date.parse(s.dream.ts)) / 1000 : 1e9;
+  const share = (src) => (s.recent.n ? (s.recent.sources[src] || 0) / s.recent.n : 0);
+  const reflex = ['flee', 'avoid', 'returnInside'].includes(act.type) && act.source !== 'claude' && act.source !== 'held';
+  const a = t.aff || {};
+  const base = {
+    broca: 0.15,
+    frontal: s.claude.resting ? 0.12 : Math.max(0.25, Math.exp(-decAge / 35)),
+    motor: act.type && act.type !== 'idle' ? 0.85 : 0.25,
+    parietal: 0.3 + (a.enclosed ? 0.6 : (a.walls || 0) / 8 + (a.sky === false ? 0.2 : 0)),
+    occipital: Math.min(1, 0.3 + 0.18 * (t.hostiles || []).length),
+    temporal: 0.55,
+    callosum: 0.4,
+    thalamus: 0.18,
+    hypothalamus: Math.max(0.2, Math.max(d.hunger || 0, d.curiosity || 0, d.fear || 0) / 100),
+    amygdala: Math.max(0.15, (d.fear || 0) / 100),
+    hippocampus: dreamAge < 180 ? 1 : 0.28,
+    brainstem: reflex ? 1 : Math.max(0.25, share('instinct')),
+    cerebellum: moving ? 0.8 : 0.25,
+  };
+  // Live firing: a region glows right after it fires and fades over a few
+  // seconds; steady firing keeps it lit.
+  if (s.live) {
+    const now = Date.parse(s.live.ts) || Date.now();
+    for (const key of Object.keys(base)) {
+      const l = liveOf(s, key);
+      if (!l || !l.lastFire) continue;
+      const age = Math.max(0, now - Date.parse(l.lastFire));
+      const recency = Math.exp(-age / 3500);
+      const rate = Math.min(1, (l.perMin || 0) / 30);
+      base[key] = Math.max(base[key] * 0.6, 0.18 + 0.82 * Math.max(recency, rate * 0.75));
+    }
+  }
+  return base;
+}
+
+function liveLine(key, s) {
+  const l = liveOf(s, key);
+  const rate = l ? `⚡${l.perMin}/min · ` : '';
+  // Right-hand labels have less room before the edge of the picture.
+  const room = REGIONS[key] && REGIONS[key].label[0] > 500 ? 17 : 40;
+  const clip = (x, n = room) => (String(x).length > n ? String(x).slice(0, n - 1) + '…' : String(x));
+  if (key === 'broca') return l && l.last ? rate + clip(`“${l.last}”`) : (s.live ? 'quiet' : 'agent not running');
+  if (key === 'amygdala' && l && l.last) return rate + clip(l.last);
+  return rate + clip(baseLine(key, s));
+}
+
+function baseLine(key, s) {
+  const t = s.tick || {}; const d = t.drives || {}; const a = t.aff || {}; const act = t.action || {};
+  switch (key) {
+    case 'frontal': return s.claude.resting ? 'resting (usage limit) — instinct decides'
+      : s.decision ? `${s.decision.action}${s.decision.at ? ' ' + s.decision.at : ''}${s.decision.target ? ' ' + s.decision.target : ''} · ${ago(s.decision.ts)}` : 'no decisions yet';
+    case 'motor': return act.type ? `${act.type}${act.at ? ' ' + act.at : ''}${t.result ? (t.result.ok ? ' ✓' : ' ✗ couldn’t') : ''}` : '—';
+    case 'parietal': return a.enclosed ? 'enclosed on all sides' : `${a.sky ? 'open sky' : 'under cover'} · ${a.walls ?? 0} of 4 sides closed`;
+    case 'occipital': return (t.hostiles || []).length ? (t.hostiles || []).map((h) => `${pretty(h.name)} ${Math.round(h.d)}m`).join(', ') : 'nothing hostile in sight';
+    case 'temporal': return s.vault ? `${s.vault.counts.experiences} memories · ${s.vault.counts.concepts} concepts` : '—';
+    case 'callosum': { const m = s.brainMap || {}; return m.cortex ? `${m.cortex.model} · ${m.hippocampus.model}/${(m.local || {}).model || 'local'}` : '—'; }
+    case 'thalamus': return `cortex ${pct((s.recent.sources.claude || 0) + (s.recent.sources.held || 0), s.recent.n)}% · instinct ${pct(s.recent.sources.instinct || 0, s.recent.n)}%`;
+    case 'hypothalamus': return `hunger ${Math.round(d.hunger || 0)} · curiosity ${Math.round(d.curiosity || 0)}`;
+    case 'amygdala': return `fear ${Math.round(d.fear || 0)}${(t.hostiles || []).length ? ' · threat near' : ''}`;
+    case 'hippocampus': return s.dream ? `last dream ${clock(s.dream.ts)} · ${String(s.dream.by || '').replace('claude:', '').replace('local:', 'local ')}` : 'no dreams yet today';
+    case 'brainstem': return `instinct ran ${pct(s.recent.sources.instinct || 0, s.recent.n)}% of recent ticks`;
+    case 'cerebellum': return s.vault && s.vault.counts.skills ? `${s.vault.counts.skills} learned skill(s)` : 'no learned skills yet';
+    default: return '';
+  }
+}
+
+// ---- the detail card for the selected region
+function renderDetail() {
+  const r = REGIONS[selected]; const s = S;
+  let html = `<h2><span class="swatch" style="background:${r.color}"></span>${esc(r.name.charAt(0) + r.name.slice(1).toLowerCase())}</h2><div class="sub">${esc(r.role)}</div>`;
+  if (!s) { $('detail').innerHTML = html + '<p class="note">Waiting for the first reading…</p>'; return; }
+  const t = s.tick || {}; const v = s.vault || {}; const dec = s.decision; const a = t.aff || {};
+  const list = (items) => items && items.length ? `<ul class="tight">${items.map((i) => `<li>${i}</li>`).join('')}</ul>` : '<p class="note">Nothing yet.</p>';
+  switch (selected) {
+    case 'frontal':
+      html += `<p>Claude (${esc((s.brainMap && s.brainMap.cortex && s.brainMap.cortex.model) || 'sonnet')}) is asked what to do about every 30 seconds, from a prompt built out of the vault and what the body senses. Its choice stands until it is asked again, unless real danger breaks it.</p>`;
+      if (s.claude.resting) html += `<p><span class="tag bad">resting</span> Claude hit its usage limit; instinct decides until it wakes.</p>`;
+      if (dec) {
+        html += `<div class="kv"><b>Last choice</b><span>${esc(dec.action)}${dec.at ? ' ' + esc(dec.at) : ''}${dec.target ? ' → ' + esc(dec.target) : ''}${dec.item ? ' (' + esc(pretty(dec.item)) + ')' : ''}</span>
+          <b>When</b><span>${ago(dec.ts)} · took ${dec.latencyMs ? (dec.latencyMs / 1000).toFixed(1) + 's' : '?'}</span>
+          <b>Instinct wanted</b><span>${esc(dec.instinct || '—')}</span>
+          <b>Outcome</b><span>${esc(dec.outcome)}</span>
+          <b>Today</b><span>${s.decisionsToday} decisions · disagreed with instinct ${s.disagreements}×</span></div>`;
+        if (dec.thought) html += `<p class="quote">“${esc(dec.thought)}”</p>`;
+        if (dec.say) html += `<p>Said aloud: <b>“${esc(dec.say)}”</b></p>`;
+      }
+      break;
+    case 'motor':
+      html += `<p>The body carries out whatever was chosen, and reports back what actually happened.</p>`;
+      html += `<div class="kv"><b>Now</b><span>${esc(t.action ? t.action.type + (t.action.at ? ' ' + t.action.at : '') : '—')} <span class="note">(chosen by ${esc(t.action && t.action.source || 'instinct')})</span></span>
+        <b>Result</b><span>${t.result ? (t.result.ok ? '<span class="tag good">done</span> ' + esc(t.result.did) : '<span class="tag bad">couldn’t</span> ' + esc(t.result.reason)) : '—'}</span>
+        <b>Recent failures</b><span>${s.recent.failures} of the last ${s.recent.n} ticks</span></div>`;
+      html += `<p class="sub" style="margin-top:12px">Most-used actions lately</p><div class="mini">${Object.entries(s.recent.actions).sort((x, y) => y[1] - x[1]).slice(0, 10).map(([k, n]) => `<span class="tag">${esc(k)} ×${n}</span>`).join('')}</div>`;
+      html += `<p class="sub" style="margin-top:12px">Things it tried and couldn’t do (capability gaps)</p>${list((v.gaps || []).map((g) => esc(g.body) + (g.count > 1 ? ` <span class="note">×${g.count}</span>` : '')))}`;
+      break;
+    case 'parietal':
+      html += `<p>What the world around the body offers it right now — sensed fresh every tick, never stored.</p>`;
+      html += `<div class="kv"><b>Overhead</b><span>${a.sky ? 'open sky' : a.roof ? 'a block right over its head' : 'cover, higher up'}</span>
+        <b>Around</b><span>${a.walls ?? 0} of 4 sides closed${a.enclosed ? ' · <span class="tag good">enclosed</span>' : ''}</span>
+        <b>Blocks carried</b><span>${a.blocks ?? 0} kind(s) it could set down</span>
+        <b>Door / bed</b><span>${a.door != null ? 'door ' + a.door + 'm' : 'no door seen'} · ${a.bed != null ? 'bed ' + a.bed + 'm' : 'no bed seen'}</span>
+        <b>World border</b><span>${t.border != null ? t.border + ' blocks to the edge' : '—'}</span>
+        <b>Position</b><span>${t.pos ? `${Math.round(t.pos.x)}, ${Math.round(t.pos.y)}, ${Math.round(t.pos.z)}` : '—'}</span></div>`;
+      break;
+    case 'occipital':
+      html += `<p>What it sees: creatures and notable blocks within 16 blocks.</p>`;
+      html += list((t.hostiles || []).map((h) => `<span class="tag bad">hostile</span> ${esc(pretty(h.name))}, ${h.d} blocks away`));
+      html += `<p class="note">(Hostiles are logged every tick; the full view goes to the cortex with each decision.)</p>`;
+      break;
+    case 'temporal':
+      html += `<p>Its long-term memory: every note in the Obsidian vault.</p>`;
+      if (v.counts) html += `<div class="mini">${Object.entries(v.counts).map(([k, n]) => `<span class="tag">${n} ${esc(k)}</span>`).join('')}</div>`;
+      html += `<p class="sub" style="margin-top:12px">Newest memories</p>${list((v.recentExperiences || []).map(esc))}`;
+      html += `<p class="sub">Goals</p>${list((v.goals || []).map((g) => (g.founding ? '<b>' : '') + esc(g.title) + (g.founding ? '</b> <span class="note">(founding)</span>' : '')))}`;
+      break;
+    case 'callosum': {
+      const m = s.brainMap || {};
+      html += `<p>Connects the regions: which mind runs each one (<code>agent/brain-map.json</code>).</p>`;
+      html += `<div class="kv"><b>Cortex</b><span>Claude ${esc(m.cortex && m.cortex.model)} · else rules</span>
+        <b>Dreaming</b><span>Claude ${esc(m.hippocampus && m.hippocampus.model)} · else ${esc((m.local || {}).model || 'local')}</span>
+        <b>Watching others</b><span>Claude ${esc(m.social && m.social.model)} · else ${esc((m.local || {}).model || 'local')}</span>
+        <b>Claude now</b><span>${s.claude.resting ? '<span class="tag bad">resting</span>' : '<span class="tag good">awake</span>'}</span></div>`;
+      break;
+    }
+    case 'thalamus':
+      html += `<p>Decides what reaches the cortex. Every time Claude is asked (about every 30 seconds), the thalamus passes up the freshest signals from the rest of the mind: the amygdala's gut feeling, the inner voice's last few thoughts, and what rumination has been turning over. It does not yet wake Claude early when something big happens — that's the next step.</p>`;
+      html += `<p class="sub">Who chose the last ${s.recent.n} actions</p>`;
+      for (const [src, col] of [['claude', '#3b82f6'], ['held', '#93c5fd'], ['instinct', '#e2b07f']]) {
+        const p = pct(s.recent.sources[src] || 0, s.recent.n);
+        html += `<div class="drive"><span>${src}</span><div class="meter"><i style="width:${p}%;background:${col}"></i></div><span>${p}%</span></div>`;
+      }
+      break;
+    case 'hypothalamus':
+      html += `<p>Keeps the body's balance: the three drives rise and fall with what happens, and the strongest one steers instinct.</p>`;
+      html += `<div class="kv"><b>Dominant</b><span>${esc(v.dominant || '—')}</span><b>Mood</b><span>${esc(v.mood || '—')}</span>
+        <b>Learned food</b><span>${(v.edible || []).length ? v.edible.map((x) => `<span class="tag good">${esc(pretty(x))}</span>`).join('') : 'nothing learned yet'}</span>
+        <b>Won’t go down</b><span>${(v.inedible || []).length ? v.inedible.map((x) => `<span class="tag bad">${esc(pretty(x))}</span>`).join('') : '—'}</span></div>`;
+      break;
+    case 'amygdala':
+      html += `<p>Fear, and the feelings it has learned about things — positive or negative, from what each one did to it.</p>`;
+      html += `<p class="sub">Feels most dangerous</p>${list((v.feared || []).map((c) => `${esc(c.title)} <span class="note">(${c.valence.toFixed(2)}, met ${c.met}×)</span>`))}`;
+      html += `<p class="sub">Feels best about</p>${list((v.loved || []).map((c) => `${esc(c.title)} <span class="note">(${c.valence.toFixed(2)})</span>`))}`;
+      break;
+    case 'hippocampus':
+      html += `<p>At daybreak, once enough has happened, it dreams: reads its recent memories and writes beliefs, goals and skills. Opus dreams when Claude is awake; ${esc((s.brainMap && s.brainMap.local && s.brainMap.local.model) || 'the local model')} when it rests.</p>`;
+      if (s.dream) html += `<div class="kv"><b>Last dream</b><span>${clock(s.dream.ts)} (${ago(s.dream.ts)})</span><b>Dreamer</b><span>${esc(s.dream.by || '—')}</span><b>Wrote</b><span>${(s.dream.written || []).map((w) => `${esc(w.kind)} “${esc(w.title)}”`).join('; ') || (s.dream.error ? 'failed: ' + esc(s.dream.error) : 'nothing new')}</span><b>Today</b><span>${s.dreamsToday} dream(s)</span></div>`;
+      html += `<p class="sub" style="margin-top:12px">Beliefs it has dreamed</p>${list((v.insights || []).map((i) => `<b>${esc(i.title)}</b> <span class="note">${esc(i.by || '')}</span><br><span class="note">${esc(i.body)}</span>`))}`;
+      break;
+    case 'brainstem':
+      html += `<p>Hard-wired reflexes that act every 1.5 seconds: flee a close threat, step away from lava, stay inside the world border, eat when starving, otherwise wander. They act while the cortex is still thinking.</p>`;
+      html += `<div class="kv"><b>Instinct share</b><span>${pct(s.recent.sources.instinct || 0, s.recent.n)}% of recent ticks</span><b>Deaths today</b><span>${s.deathsToday}${s.lastDeath ? ' · last ' + clock(s.lastDeath) : ''}</span>
+        <b>Last night</b><span>${s.night ? `${s.night.survived ? '<span class="tag good">survived</span>' : '<span class="tag bad">died</span>'} · hurt ${s.night.healthLost} · under cover ${Math.round((s.night.shareUnderCover || 0) * 100)}%` : 'no graded night yet'}</span></div>`;
+      break;
+    case 'broca': {
+      const voice = s.live ? s.live.events.filter((e) => e.region === 'innerVoice').reverse() : [];
+      html += `<p>The quick inner voice: ${esc((s.brainMap && s.brainMap.local && s.brainMap.local.model) || 'the local model')} thinks a fresh first-person thought every few seconds, all the time, while the body moves and Claude deliberates. Each thought may carry an urge; between Claude's plans, the body acts on it.</p>`;
+      html += `<div class="kv"><b>Firing</b><span>${liveOf(s, 'broca') ? liveOf(s, 'broca').perMin + ' thoughts in the last minute' : 'quiet (agent not running?)'}</span>
+        <b>Acted on</b><span>${s.recent.sources['inner voice'] || 0} of the last ${s.recent.n} ticks</span></div>`;
+      html += `<p class="sub" style="margin-top:12px">Just now, newest first</p>${list(voice.slice(0, 8).map((e) => esc(e.text)))}`;
+      const gutEv = s.live ? s.live.events.filter((e) => e.region === 'amygdala').reverse()[0] : null;
+      if (gutEv) html += `<p class="note">Its gut (amygdala): ${esc(gutEv.text)}</p>`;
+      break;
+    }
+    case 'cerebellum':
+      html += `<p>Smooth movement (pathfinding) — and, later, practised skills that run without the cortex. Skills it has earned:</p>${list((v.skills || []).map(esc))}`;
+      html += `<p class="sub">What it has learned about its own strategies</p>${list((v.strategies || []).map((st) => `${esc(st.title)} <span class="note">(${st.rate != null && !Number.isNaN(st.rate) ? Math.round(st.rate * 100) + '% · ' : ''}${st.tries} tries)</span>`))}`;
+      break;
+  }
+  $('detail').innerHTML = html;
+}
+
+// ---- the bot's-eye view (the agent's prismarine viewer, VIEWER_PORT 3007)
+const EYES_URL = `${location.protocol}//${location.hostname}:3007/`;
+let eyesOnline = null;
+function updateEyes(online) {
+  if (online === eyesOnline) return;
+  eyesOnline = online;
+  $('eyesOff').hidden = online;
+  // The viewer restarts with the agent: reload it whenever the agent comes back.
+  $('eyesView').src = online ? EYES_URL : 'about:blank';
+}
+(() => {
+  let big = false;
+  try { big = localStorage.getItem('mindbot-eyes-big') === '1'; } catch (_) { /* storage blocked: fine */ }
+  const apply = () => { document.body.classList.toggle('eyes-big', big); $('eyesSize').textContent = big ? 'Smaller' : 'Bigger'; };
+  apply();
+  $('eyesSize').addEventListener('click', () => {
+    big = !big;
+    try { localStorage.setItem('mindbot-eyes-big', big ? '1' : '0'); } catch (_) { /* fine */ }
+    apply();
+  });
+})();
+
+function render(s) {
+  const t = s.tick || {};
+  updateEyes(!!s.online);
+  $('dot').classList.toggle('on', s.online);
+  $('status').textContent = s.online ? (s.claude.resting ? 'alive · Claude resting' : 'alive') : (t.ts ? `offline · last seen ${ago(t.ts)}` : 'no agent data yet');
+  const hp = t.health ?? 0; const fd = t.food ?? 0;
+  $('hp').style.width = `${(hp / 20) * 100}%`; $('hpv').textContent = `${Math.round(hp)}/20`;
+  $('fd').style.width = `${(fd / 20) * 100}%`; $('fdv').textContent = `${fd}/20`;
+  $('sky').textContent = t.isDay == null ? '' : (t.isDay ? '☀ day' : '☾ night');
+  $('deaths').textContent = `☠ ${s.deathsToday} today`;
+
+  const act = activity(s);
+  document.querySelectorAll('.region').forEach((el) => {
+    const k = el.dataset.r; const v = s.online ? act[k] : 0.12;
+    if (el.getAttribute('fill') === 'none') el.style.strokeOpacity = 0.35 + 0.65 * v;
+    else el.style.fillOpacity = (k === 'brainstem' ? 0.55 : 0.28) + (k === 'brainstem' ? 0.45 : 0.72) * v;
+    el.style.filter = s.online && v > 0.7 ? 'url(#glow)' : '';
+    el.classList.toggle('resting', k === 'frontal' && s.claude.resting);
+    el.classList.toggle('fail', k === 'motor' && !!(t.result && t.result.ok === false));
+  });
+  document.querySelectorAll('[data-live]').forEach((el) => { el.textContent = liveLine(el.dataset.live, s); });
+
+  // pulses on new events
+  const pulse = (k) => document.querySelectorAll(`.region[data-r="${k}"]`).forEach((el) => { el.classList.remove('pulse'); void el.getBBox(); el.classList.add('pulse'); });
+  if (s.decision && seen.decision && s.decision.ts !== seen.decision) pulse('frontal');
+  if (s.dream && seen.dream && s.dream.ts !== seen.dream) pulse('hippocampus');
+  if (s.lastDeath && seen.death && s.lastDeath !== seen.death) { const st = $('stage'); st.classList.remove('flash'); void st.offsetWidth; st.classList.add('flash'); }
+  // A spark every time a region fires (from the live blackboard file).
+  if (s.live) {
+    for (const [name, r] of Object.entries(s.live.regions)) {
+      if (r.lastFire && seen.fires[name] && r.lastFire !== seen.fires[name]) {
+        document.querySelectorAll(`.region[data-r="${viewKey(name)}"]`).forEach((el) => { el.classList.remove('spark'); void el.getBBox(); el.classList.add('spark'); });
+      }
+      seen.fires[name] = r.lastFire || seen.fires[name] || 'none';
+    }
+  }
+  renderFeed(s);
+  renderEeg(s);
+  seen.decision = s.decision ? s.decision.ts : seen.decision || 'none';
+  seen.dream = s.dream ? s.dream.ts : seen.dream || 'none';
+  seen.death = s.lastDeath || seen.death || 'none';
+  seen.tickTs = t.ts;
+
+  const d = t.drives || {};
+  $('drives').innerHTML = [['hunger', '#d97706'], ['fear', '#ef4444'], ['curiosity', '#3b82f6']].map(([k, c]) =>
+    `<div class="drive"><span>${k}</span><div class="meter"><i style="width:${Math.min(100, d[k] || 0)}%;background:${c}"></i></div><span>${Math.round(d[k] || 0)}</span></div>`).join('');
+  $('thoughts').innerHTML = (s.thoughts || []).map((x) => `<li>${esc(x)}</li>`).join('') || '<li class="note">No thoughts yet.</li>';
+  $('said').innerHTML = (s.said || []).map((x) => `<li>“${esc(x)}”</li>`).join('') || '<li class="note">Nothing yet.</li>';
+  $('intention').textContent = (s.vault && s.vault.intention) ? `“${s.vault.intention}”` : 'None held right now.';
+  renderDetail();
+}
+
+const colorOf = (key) => (key === 'callosum' ? '#c9b48f' : REGIONS[key] ? REGIONS[key].color : '#999');
+const nameOf = (key) => (REGIONS[key] ? REGIONS[key].name.replace(' LOBE', '').replace("'S AREA", "'s") : key);
+let lastFeedTop = null;
+
+/** The running feed of firings, newest first. */
+function renderFeed(s) {
+  const ev = s.live ? [...s.live.events].reverse().slice(0, 14) : [];
+  if (!ev.length) { $('feed').innerHTML = `<li><i></i><b></b><span class="note">${s.live ? 'quiet' : 'agent not running'}</span></li>`; return; }
+  const top = ev[0].ts + ev[0].region;
+  $('feed').innerHTML = ev.map((e, i) => {
+    const k = viewKey(e.region);
+    const isNew = lastFeedTop && i < 3 && top !== lastFeedTop;
+    return `<li class="${isNew ? 'new' : ''}"><i style="background:${colorOf(k)}"></i><b>${esc(nameOf(k))}</b><span title="${esc(e.text)}">${esc(e.text)}</span></li>`;
+  }).join('');
+  lastFeedTop = top;
+}
+
+/** A spike raster, like an EEG: one row per region, one mark per firing, last 60 s. */
+function renderEeg(s) {
+  const svg = $('eeg');
+  const rows = EEG_ORDER;
+  const H = 300; const W = 1000; const L = 120; const rowH = H / rows.length;
+  const now = s.live ? Date.parse(s.live.ts) : Date.now();
+  let out = '';
+  rows.forEach((key, i) => {
+    const y = i * rowH;
+    out += `<rect x="0" y="${y}" width="${W}" height="${rowH}" fill="${i % 2 ? '#fbfaf7' : '#ffffff'}"/>`;
+    out += `<text x="8" y="${y + rowH / 2 + 4}">${esc(nameOf(key))}</text>`;
+    const l = liveOf(s, key);
+    const times = (l && l.times) || [];
+    for (const ts of times) {
+      const x = L + (W - L - 78) * (1 - Math.min(60000, now - ts) / 60000);
+      out += `<rect x="${x.toFixed(1)}" y="${(y + 3).toFixed(1)}" width="3" height="${(rowH - 6).toFixed(1)}" rx="1" fill="${colorOf(key)}"/>`;
+    }
+    if (l) out += `<text x="${W - 6}" y="${y + rowH / 2 + 4}" text-anchor="end">${l.perMin}/min</text>`;
+  });
+  out += `<line x1="${L}" y1="0" x2="${L}" y2="${H}" stroke="#e7e3dc"/>`;
+  out += `<text x="${L + 4}" y="${H - 4}" style="font-weight:500">60 s ago</text><text x="${W - 60}" y="${H - 4}" text-anchor="end" style="font-weight:500">now</text>`;
+  svg.innerHTML = out;
+}
+
+async function poll() {
+  try {
+    const res = await fetch('/state', { cache: 'no-store' });
+    S = await res.json();
+    render(S);
+  } catch (err) {
+    $('dot').classList.remove('on');
+    $('status').textContent = 'brain view server not reachable';
+  }
+  setTimeout(poll, 1000);
+}
+
+buildLabels();
+select('frontal');
+poll();
+</script>
+</body>
+</html>
