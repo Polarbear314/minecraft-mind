@@ -193,6 +193,21 @@ function readState() {
     actions[a] = (actions[a] || 0) + 1;
     if (t.result && t.result.ok === false) failures += 1;
   }
+  // The behaviour stack (MIND=layers, docs/design-subsumption.md): who has the
+  // body now, who else spoke, and each layer's share of the last 200 ticks.
+  const LAYER_ORDER = ['survive', 'make', 'shelter', 'gather', 'forage', 'wander'];
+  const layerShare = {};
+  let layerTicks = 0;
+  for (const t of recent) if (t.action && t.action.layer) { layerShare[t.action.layer] = (layerShare[t.action.layer] || 0) + 1; layerTicks += 1; }
+  const la = lastTick && lastTick.action;
+  const layers = la && la.layer ? {
+    order: LAYER_ORDER,
+    current: la.layer,
+    act: `${la.type}${la.at ? ` ${la.at}` : ''}${la.plan ? ` (plan "${la.plan}")` : ''}`,
+    voices: la.voices || [],
+    share: Object.fromEntries(LAYER_ORDER.map((k) => [k, layerTicks ? Math.round((100 * (layerShare[k] || 0)) / layerTicks) : 0])),
+    ticks: layerTicks,
+  } : null;
   const deathsToday = ticks.filter((t) => t.event === 'death').length;
   const lastDeath = [...ticks].reverse().find((t) => t.event === 'death') || null;
 
@@ -251,6 +266,7 @@ function readState() {
     night: nights[nights.length - 1] || null,
     claude: { resting, line: restLine },
     brainMap: brainMap(),
+    layers,
     thoughts: thoughts.slice(-8).reverse(),
     said: said.slice(-4).reverse(),
     vault: VAULT ? readVault() : null,

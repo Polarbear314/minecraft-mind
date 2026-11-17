@@ -31,6 +31,10 @@
   .eyesOff[hidden] { display: none; }
   #eyesSize { font: 600 12px system-ui, sans-serif; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--edge); background: #f7f5f1; cursor: pointer; }
   #eyesSize:hover { background: #efebe4; }
+  .layerRow { display: grid; grid-template-columns: 74px 1fr 38px; gap: 8px; align-items: center; font-size: 13px; padding: 3px 6px; border-radius: 8px; }
+  .layerRow.on { background: #fef3c7; font-weight: 700; }
+  .layerRow .meter { height: 8px; }
+  .layerRow .spoke { color: #92400e; font-size: 11px; }
   @media (max-width: 980px) { main { grid-template-columns: 1fr; } }
   .stage { background: var(--card); border: 1px solid var(--edge); border-radius: 18px; padding: 6px; }
   svg { width: 100%; height: auto; display: block; }
@@ -170,6 +174,7 @@
         <div class="eyesOff" id="eyesOff">The view appears while the agent is running.</div>
       </div>
     </div>
+    <div class="card" id="stack" hidden></div>
     <div class="card" id="detail"></div>
     <div class="card">
       <h2 style="font-size:15px">Firing now <span class="note">(every region, as it fires)</span></h2>
@@ -534,6 +539,23 @@ function render(s) {
   $('said').innerHTML = (s.said || []).map((x) => `<li>“${esc(x)}”</li>`).join('') || '<li class="note">Nothing yet.</li>';
   $('intention').textContent = (s.vault && s.vault.intention) ? `“${s.vault.intention}”` : 'None held right now.';
   renderDetail();
+  renderStack(s);
+}
+
+const LAYER_JOB = { survive: 'border, creepers, danger, starving', make: 'plans, planks, tables, bread', shelter: 'dusk and night: dig in, seal, sleep',
+  gather: 'by day: wood, blocks, things lying about', forage: 'food: eat, harvest, hunt, look', wander: 'explore, fiddle, watch people' };
+/** The behaviour stack (MIND=layers): who has the body, who else spoke, shares. */
+function renderStack(s) {
+  const L = s.layers;
+  $('stack').hidden = !L;
+  if (!L) return;
+  const rows = L.order.map((k) => `<div class="layerRow${k === L.current ? ' on' : ''}" title="${esc(LAYER_JOB[k] || '')}">
+    <span>${k}${k !== L.current && L.voices.includes(k) ? ' <span class="spoke">spoke</span>' : ''}</span>
+    <div class="meter"><i style="width:${L.share[k]}%;background:${k === L.current ? '#d97706' : '#9ca3af'}"></i></div>
+    <span>${L.share[k]}%</span></div>`).join('');
+  $('stack').innerHTML = `<h2 style="font-size:15px">Behaviour stack <span class="note">(MIND=layers · first that speaks wins)</span></h2>
+    <p style="margin:4px 0 8px"><b>${esc(L.current)}</b> has the body: ${esc(L.act)}</p>${rows}
+    <p class="note" style="margin-top:6px">Bars: share of the last ${L.ticks} ticks in control. Claude narrates (the thoughts below) and dreams, but never decides.</p>`;
 }
 
 const colorOf = (key) => (key === 'callosum' ? '#c9b48f' : REGIONS[key] ? REGIONS[key].color : '#999');

@@ -1725,6 +1725,84 @@ async function main() {
   dreamCheck(dDays.length === 3 && dDays[1].length === 3 && dM.mind === 'layers' && dM.distance === 2 && dM.nightEnclosed === 100 && dM.inControl.wander === 100,
     'npm run days cuts the life into days at dawn and measures each (distance, nights enclosed, who was in control)');
 
+  // ---- The narrator (Claude as the stream of thought in MIND=layers)
+  const { createNarrator, narrationPrompt } = require('./brain/narrator');
+  const nAsked = [];
+  let nClock = 1000000;
+  const nLogDir = fs.mkdtempSync(path.join(os.tmpdir(), 'minecraft-mind-narration-'));
+  const nNarr = createNarrator({ provider: { ask: async (p) => { nAsked.push(p); return { text: '{"thought": "I am hungry, so I go after the pig."}', by: 'test' }; } },
+    everyMs: 20000, logDir: nLogDir, now: () => nClock });
+  const nStack = nNarr.narrated(async () => ({ type: 'swingAt', target: { name: 'pig' }, layer: 'forage', voices: ['forage', 'wander'], source: 'layer:forage' }));
+  const nA1 = await nStack(lDrives({ hunger: 60 }), lObs());
+  await new Promise((r) => setTimeout(r, 10));
+  nClock += 1500;
+  const nA2 = await nStack(lDrives({ hunger: 60 }), lObs());
+  nClock += 1500;
+  const nA3 = await nStack(lDrives({ hunger: 60 }), lObs());
+  dreamCheck(nA1.type === 'swingAt' && nA1.layer === 'forage' && !nA1.thought && nA2.thought === 'I am hungry, so I go after the pig.' && !nA3.thought,
+    'the narrator never changes what the body does; each new thought rides on one tick');
+  dreamCheck(nAsked.length === 1 && !/forage|layer/i.test(nAsked[0]) && /swingAt pig/.test(nAsked[0]),
+    'Claude is asked at most every 20 s, shown what the body did but not which layer did it');
+  const nLog = fs.readdirSync(nLogDir).find((f) => f.startsWith('narration-'));
+  const nEntry = nLog && JSON.parse(fs.readFileSync(path.join(nLogDir, nLog), 'utf8').trim().split('\n')[0]);
+  dreamCheck(!!nEntry && nEntry.layerNow === 'forage' && nEntry.thought.includes('pig'), 'every narration is logged next to the layer that really acted, for checking its stories');
+  const nBroken = createNarrator({ provider: { ask: async () => { throw new Error('usage limit'); } }, now: () => nClock }).narrated(async () => ({ type: 'idle', layer: 'wander' }));
+  dreamCheck((await nBroken(lDrives(), lObs())).type === 'idle', 'if Claude can\'t answer, the body carries on regardless');
+
+  // ---- Learned layers (stage 4)
+  console.log('\n=== Learned layers ===');
+  const feat = require('./learn/features');
+  const smx = require('./learn/softmax');
+  const exm = require('./learn/examples');
+  const { balanced } = require('./tools/trainLayers');
+  const sObs = lObs({ health: 10, food: 8, nearbyEntities: [{ name: 'cow', distance: 4, position: { x: 4, y: 64, z: 0 } }],
+    nearbyCrops: [{ name: 'carrots', ripe: true, distance: 8, position: { x: 8, y: 64, z: 0 } }], inventoryFood: [], borderDistance: 20 });
+  const sDr = lDrives({ hunger: 30 });
+  const sRec = { health: 10, food: 8, isDay: true, tod: 3000, near: [{ name: 'cow', d: 4 }], crops: [{ name: 'carrots', ripe: true, d: 8 }], items: [],
+    foodCarried: 0, border: 20, aff: { roof: false, walls: 0, enclosed: false }, hostiles: [], drives: { hunger: 30, fear: 0, curiosity: 50 } };
+  const sA = feat.vector(feat.recordFromObservation(sObs, sDr)); const sB = feat.vector(sRec);
+  dreamCheck(sA.length === feat.FEATURES.length && sA.every((v, i) => Math.abs(v - sB[i]) < 1e-9),
+    'a learned layer sees the same numbers live as it learned from the log');
+  const sX = []; const sY = [];
+  for (let i = 0; i < 60; i++) { const a = i % 2; sX.push([a, 1 - a, 0.5]); sY.push(a ? 'hunt' : 'none'); }
+  const sM = smx.train(sX, sY, { classes: ['hunt', 'none'], features: ['animalClose', 'carriesNoFood', 'x'], epochs: 300 });
+  const sT = smx.toTable(sM);
+  dreamCheck(smx.predict(sM, [1, 0, 0.5]).pick === 'hunt' && smx.predict(sM, [0, 1, 0.5]).pick === 'none' && sT.hunt.animalClose > 0,
+    'the classifier learns, and its weights read as a table ("animalClose -> hunt: +")');
+  const sEdited = JSON.parse(JSON.stringify(sT)); sEdited.hunt.animalClose = -9;
+  dreamCheck(smx.predict(smx.fromTable(sEdited, ['animalClose', 'carriesNoFood', 'x']), [1, 0, 0.5]).pick === 'none',
+    'a weight edited by hand (stage 5b: by Opus) changes what the layer does, with no training');
+  const sTk = (i, extra) => ({ ts: new Date(Date.parse('2026-11-20T10:00:00Z') + i * 1500).toISOString(), health: 20, food: 12, foodCarried: 0, isDay: true, tod: 3000,
+    pos: { x: i, y: 64, z: 0 }, near: [], crops: [], items: [], hostiles: [], drives: { hunger: 20, fear: 0, curiosity: 50 },
+    action: { type: 'explore', layer: 'wander', voices: ['wander'] }, ...extra });
+  const sRun = [sTk(0, { action: { type: 'swingAt', layer: 'forage', voices: ['forage', 'wander'] } })];
+  for (let i = 1; i < 50; i++) sRun.push(sTk(i, i > 10 ? { foodCarried: 3 } : {}));
+  const sEx = exm.buildExamples('forage', sRun);
+  dreamCheck(sEx[0] && sEx[0].y === 'hunt' && sEx[0].actual === 'hunt', 'a hunt that brought food within the minute is a "do this" example');
+  const sHurt = [sTk(0, { action: { type: 'swingAt', layer: 'forage', voices: ['forage'] } })];
+  for (let i = 1; i < 50; i++) sHurt.push(sTk(i, { health: i > 5 ? 12 : 20 }));
+  dreamCheck(exm.buildExamples('forage', sHurt)[0].y === 'none', 'a hunt that got it hurt teaches the layer to stay quiet there');
+  const sPast = [sTk(0, { near: [{ name: 'cow', d: 6 }], food: 14 })];
+  for (let i = 1; i < 300; i++) sPast.push(sTk(i, { food: i > 250 ? 4 : 14 }));
+  const sDelayed = exm.buildExamples('forage', sPast).find((e) => e.delayed);
+  dreamCheck(!!sDelayed && sDelayed.y === 'hunt' && sDelayed.actual === 'none',
+    'the delayed lesson: Forage stayed quiet beside a cow and the body went hungry later -> "hunt here"');
+  const sBal = balanced([{ y: 'hunt', actual: 'none' }, { y: 'none', actual: 'none' }], (e) => e.actual);
+  dreamCheck(Math.abs(sBal.score - 0.5) < 1e-9, 'the gate scores the hand-written layer by what it really did (here: right half the time)');
+  const sHuntModel = { classes: ['eat', 'pickup', 'harvest', 'hunt', 'seekFood', 'none'], features: feat.FEATURES,
+    W: ['eat', 'pickup', 'harvest', 'hunt', 'seekFood', 'none'].map((c) => feat.FEATURES.map(() => 0)), b: [0, 0, 1, 2, 0, -1] };
+  const sShadow = createLayerStack({ random: () => 0.99, learned: () => ({ forage: { model: sHuntModel, served: false, version: 3 } }), learnedMode: 'on' });
+  const sSh = sShadow(sDr, sObs);
+  dreamCheck(sSh.layer === 'forage' && sSh.type === 'dig' && !sSh.learned && sSh.shadow.forage.pick === 'hunt' && sSh.shadow.forage.hand === 'harvest' && sSh.shadow.forage.v === 3,
+    'a model that has not passed its gate only shadows: logged, not acted on');
+  const sServed = createLayerStack({ random: () => 0.99, learned: () => ({ forage: { model: sHuntModel, served: true } }), learnedMode: 'on' });
+  const sOnAct = sServed(sDr, sObs);
+  dreamCheck(sOnAct.learned === 'forage' && sOnAct.type === 'swingAt' && sOnAct.target.name === 'cow',
+    'a served model acts: it hunts the cow where the hand-written layer would harvest the carrots');
+  const sOn = createLayerStack({ random: () => 0.99, learned: () => ({ forage: { model: { ...sHuntModel, b: [0, 0, 2, 1, 0, -1] }, served: true } }), learnedMode: 'on' });
+  const sNoCrop = sOn(sDr, lObs({ nearbyEntities: [{ name: 'cow', distance: 4, position: { x: 4, y: 64, z: 0 } }] }));
+  dreamCheck(sNoCrop.type === 'swingAt' && sNoCrop.learned === 'forage', 'if its top pick can\'t be done here, a learned layer takes its next one');
+
   // ---- Weighted memory and forgetting (docs/design-subsumption.md, stage 2)
   console.log('\n=== Weighted memory ===');
   const memMod = require('./vault/memory');

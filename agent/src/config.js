@@ -38,6 +38,11 @@ const config = {
   // the cortex by day) or 'layers' (a behaviour stack after Brooks, no Claude
   // by day; docs/design-subsumption.md). Dreaming works the same in both.
   mind: ((process.env.MIND || 'regions').trim().toLowerCase() === 'layers') ? 'layers' : 'regions',
+  // Stage 4 learned layers (MIND=layers): 'off', 'shadow' (default: log what a
+  // learned Forage/Wander would do; the hand-written ones act) or 'on' (a
+  // learned layer that passed its gate acts). Models: logs/layers/.
+  learnedLayers: (['off', 'shadow', 'on'].includes((process.env.LEARNED_LAYERS || '').trim().toLowerCase())
+    ? (process.env.LEARNED_LAYERS || '').trim().toLowerCase() : 'shadow'),
   anthropicKey: process.env.ANTHROPIC_API_KEY ? process.env.ANTHROPIC_API_KEY.trim() : null,
   llmModel: (process.env.LLM_MODEL || 'claude-haiku-4-5').trim(),
   // Dreaming is rare and benefits most from deeper reasoning, so it can run on

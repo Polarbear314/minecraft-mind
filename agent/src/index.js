@@ -16,7 +16,8 @@ const { textAsk, localProvider } = require('./brain/providers');
 const { createBlackboard } = require('./brain/blackboard');
 const { createAmygdala, createInnerVoice, createRumination } = require('./brain/regions');
 const { createArbiter } = require('./brain/arbiter');
-const { createLayerStack } = require('./brain/layers');
+const { createLayerStack, learnedLoader } = require('./brain/layers');
+const { createNarrator } = require('./brain/narrator');
 const { toAction } = require('./decision/llmDecide');
 const { onExperience } = require('./vault/experienceLog');
 const { ensureInheritance } = require('./vault/inheritance');
@@ -95,12 +96,22 @@ const llmDecideFn = layersMode
 const planRunner = (claudeMode || layersMode) && nature.plans !== false
   ? createPlanRunner({ vaultPath: config.vaultPath, logDir: config.decisionLogDir, blackboard })
   : null;
+// MIND=layers with Claude available: Claude narrates (the stream of thought)
+// but never decides (brain/narrator.js).
+const narrator = layersMode && claudeMode
+  ? createNarrator({ provider: regionProvider(brain, 'cortex', { timeoutMs: 60000 }), blackboard, logDir: config.decisionLogDir })
+  : null;
+const layerStack = layersMode ? createLayerStack({
+  planRunner, blackboard,
+  learned: learnedLoader(path.resolve(__dirname, '..', '..', 'logs', 'layers')),
+  learnedMode: config.learnedLayers,
+}) : null;
 const decideFn = layersMode
-  ? createLayerStack({ planRunner, blackboard })
+  ? (narrator ? narrator.narrated(layerStack) : layerStack)
   : claudeMode && llmDecideFn
     ? createArbiter({ decide: llmDecideFn, blackboard, toAction, planRunner })
     : llmDecideFn;
-if (layersMode) console.log('[mind] MIND=layers: the behaviour stack decides (survive > make > shelter > gather > forage > wander); Claude only dreams.');
+if (layersMode) console.log(`[mind] MIND=layers: the behaviour stack decides (survive > make > shelter > gather > forage > wander); Claude ${narrator ? 'narrates and dreams, but never decides' : 'only dreams'}. Learned layers: ${config.learnedLayers}.`);
 
 // Always-on regions on the local model, each its own loop (brain/regions.js).
 const localMind = brain.local && brain.local.model

@@ -146,4 +146,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { splitDays, measure, spark };
+module.exports = { splitDays, measure, spark, readTicks };

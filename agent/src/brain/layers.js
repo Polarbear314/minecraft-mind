@@ -26,7 +26,9 @@
 const { createReflexes, isOverriding, isEvening } = require('../decision/reflexes');
 const { lookup } = require('../vault/ontologyMap');
 const { FEAR_THRESHOLD, HUNGER_THRESHOLD, BORDER_MARGIN } = require('../decision/decide');
-const { FOOD_DROPS } = require('../vault/inheritance');
+const { FOOD_DROPS, FOOD_ANIMALS } = require('../vault/inheritance');
+const { recordFromObservation, vector } = require('../learn/features');
+const { predict } = require('../learn/softmax');
 
 const HUNGER_URGENT = 75;
 const HEALTH_SAFE = 10;
@@ -61,6 +63,13 @@ function createLayerStack({
   tasteChance = TASTE_CHANCE,
   random = Math.random,
   now = () => Date.now(),
+  // Stage 4: learned layers. learned() -> { forage?: { model, served }, wander?: ... }
+  // (fresh each call, so new nightly models are picked up). mode: 'off' |
+  // 'shadow' (log what the learned layer would do; the hand-written one acts) |
+  // 'on' (a model that passed the gate acts; otherwise the hand-written one).
+  learned = () => ({}),
+  learnedMode = 'shadow',
+  learnedSalt = 0.1, // a learned layer sometimes samples instead of taking its top pick
 } = {}) {
   const ownReflexes = createReflexes();
   let lastMade = 0;
@@ -199,6 +208,67 @@ function createLayerStack({
 
   const LAYERS = { survive, make, shelter, gather, forage, wander };
 
+  // ------------------------------------------------------------ learned layers
+  /** Turn a learned layer's act class into a concrete act here, or null if it can't be done. */
+  function resolve(layer, cls, drives, o, rx) {
+    if (cls === 'none') return null;
+    if (layer === 'forage') {
+      if (cls === 'eat') return foodCarried(o) ? { type: 'eat', item: o.inventoryFood[0].name } : undefined;
+      if (cls === 'pickup') {
+        const item = (o.nearbyItems || []).find((i) => FOOD_DROPS.includes(i.name) && (i.distance == null || i.distance <= ITEM_RANGE));
+        return item ? { type: 'pickup', target: item } : undefined;
+      }
+      if (cls === 'harvest') {
+        const crop = (o.nearbyCrops || []).find((c) => c.ripe && c.position && (c.distance == null || c.distance <= CROP_REACH));
+        return crop ? { type: 'dig', target: crop, harvest: crop.name } : undefined;
+      }
+      if (cls === 'hunt') {
+        if (hostileWithin(o, GATHER_SAFE)) return undefined;
+        const prey = (o.nearbyEntities || []).filter((e) => FOOD_ANIMALS.includes(e.name) && e.distance != null && e.distance <= 16)
+          .sort((a, b) => a.distance - b.distance)[0];
+        return prey ? { type: 'swingAt', target: prey } : undefined;
+      }
+      if (cls === 'seekFood') return { type: 'seekFood' };
+    }
+    if (layer === 'wander') {
+      if (cls === 'explore') return { type: 'explore' };
+      if (cls === 'fiddle') return experiment(o) || undefined;
+      if (cls === 'approach') { const p = (o.nearbyEntities || []).find((e) => e.isPlayer); return p ? { type: 'approach', target: p } : undefined; }
+      if (cls === 'idle') return { type: 'idle' };
+    }
+    return undefined; // undefined = can't here; try the next pick
+  }
+
+  /** A learned layer's proposal: its most likely act that can be done here (or quiet). */
+  function learnedProposal(layer, model, drives, o, rx, x) {
+    const { probs } = predict(model, x);
+    let order = Object.entries(probs).sort((a, b) => b[1] - a[1]);
+    if (random() < learnedSalt) { // sample one by its probability, then the rest in order
+      let r = random(); let chosen = order[0];
+      for (const e of order) { r -= e[1]; if (r <= 0) { chosen = e; break; } }
+      order = [chosen, ...order.filter((e) => e !== chosen)];
+    }
+    for (const [cls, p] of order) {
+      const act = resolve(layer, cls, drives, o, rx);
+      if (act === undefined) continue;
+      return { act, cls, p };
+    }
+    return { act: null, cls: 'none', p: probs.none || 0 };
+  }
+
+  /** Swap in (or shadow) the learned layers. Returns { shadow, learnedBy }. */
+  function applyLearned(layerName, proposals, drives, o, rx, x, out) {
+    const m = (learned() || {})[layerName];
+    if (!m || learnedMode === 'off') return;
+    const pick = learnedProposal(layerName, m.model, drives, o, rx, x);
+    const handCls = proposals[layerName] ? (require('../learn/examples').actClass(layerName, proposals[layerName]) || proposals[layerName].type) : 'none';
+    out.shadow[layerName] = { pick: pick.cls, p: Math.round(pick.p * 100) / 100, hand: handCls, v: m.version || null };
+    if (learnedMode === 'on' && m.served) {
+      proposals[layerName] = pick.act;
+      out.learnedBy.push(layerName);
+    }
+  }
+
   /** decide(drives, o): every layer proposes; the highest that speaks wins. */
   return function decideByLayers(drives, o) {
     const rx = o.reflexes || ownReflexes;
@@ -206,6 +276,10 @@ function createLayerStack({
     proposals.survive = survive(drives, o, rx);
     proposals.shelter = shelter(drives, o, rx);
     proposals.forage = forage(drives, o, rx);
+    const learnedOut = { shadow: {}, learnedBy: [] };
+    const anyLearned = learnedMode !== 'off' && Object.keys(learned() || {}).length;
+    const x = anyLearned ? vector(recordFromObservation(o, drives)) : null;
+    if (anyLearned) applyLearned('forage', proposals, drives, o, rx, x, learnedOut);
     // Food right here (a concrete act, not just "go looking") while carrying
     // little: Make and Gather give way to it.
     const foodChance = !!(proposals.forage && proposals.forage.type !== 'seekFood' && foodCarried(o) < STOCK);
@@ -219,11 +293,14 @@ function createLayerStack({
       if (name === 'shelter' || name === 'survive' || name === 'forage') continue;
       proposals[name] = LAYERS[name](drives, o, rx, { inhibited, foodChance });
     }
+    if (anyLearned) applyLearned('wander', proposals, drives, o, rx, x, learnedOut);
     const voices = ORDER.filter((n) => proposals[n]);
     const layer = voices[0] || 'wander';
     const act = { ...(proposals[layer] || { type: 'idle' }) };
     act.layer = layer;
     act.voices = voices;
+    if (Object.keys(learnedOut.shadow).length) act.shadow = learnedOut.shadow;
+    if (learnedOut.learnedBy.includes(layer)) act.learned = layer;
     // A plan step keeps source 'plan': the plan runner only advances steps it
     // recognises as its own (planRunner.afterTick).
     if (!act.plan) act.source = `layer:${layer}`;
@@ -235,4 +312,39 @@ function createLayerStack({
   };
 }
 
-module.exports = { createLayerStack, ORDER, RANK };
+/**
+ * Load the learned layers from logs/layers/ (stage 4), re-reading a file only
+ * when it changes. Served = <layer>.json (passed the gate); for shadowing, the
+ * newest version is used even if it didn't pass.
+ */
+function learnedLoader(dir, { layers = ['forage', 'wander'] } = {}) {
+  const fs = require('fs');
+  const path = require('path');
+  const cache = {};
+  const read = (file) => {
+    try {
+      const st = fs.statSync(file);
+      if (cache[file] && cache[file].mtime === st.mtimeMs) return cache[file].data;
+      const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+      cache[file] = { mtime: st.mtimeMs, data };
+      return data;
+    } catch (_) { return null; }
+  };
+  return function learned() {
+    const out = {};
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch (_) { return out; }
+    for (const layer of layers) {
+      const served = read(path.join(dir, `${layer}.json`));
+      const prefix = `${layer}-v`;
+      const versions = names.filter((f) => f.startsWith(prefix) && f.endsWith('.json'))
+        .map((f) => Number(f.slice(prefix.length, -'.json'.length))).filter((n) => Number.isInteger(n) && n > 0);
+      const newest = versions.length ? read(path.join(dir, `${layer}-v${Math.max(...versions)}.json`)) : null;
+      const pickFile = served || newest;
+      if (pickFile && pickFile.model) out[layer] = { model: pickFile.model, served: !!served, version: pickFile.version };
+    }
+    return out;
+  };
+}
+
+module.exports = { createLayerStack, learnedLoader, ORDER, RANK };

@@ -13,7 +13,8 @@
     "export": "node src/tools/experienceExport.js",
     "cortexeval": "node src/tools/cortexEval.js",
     "recall": "node src/tools/recall.js",
-    "days": "node src/tools/days.js"
+    "days": "node src/tools/days.js",
+    "train-layers": "node src/tools/trainLayers.js"
   },
   "license": "MIT",
   "dependencies": {

@@ -106,9 +106,10 @@ function createBodyJournal({ vaultPath, logDir = null, hostileRange = 10, onNigh
         // For a learning cortex (design-plasticity-and-a-learning-cortex.md, B1):
         // the hour, the non-hostile company, and what is carried.
         tod: o.timeOfDay != null ? Math.round(o.timeOfDay) : null,
-        near: (o.nearbyEntities || []).filter((e) => !e.hostile).slice(0, 4).map((e) => ({ name: e.name, d: e.distance })),
+        near: (o.nearbyEntities || []).filter((e) => !e.hostile).slice(0, 4).map((e) => ({ name: e.name, d: e.distance, ...(e.isPlayer ? { isPlayer: true } : {}) })),
         crops: (o.nearbyCrops || []).slice(0, 4).map((c) => ({ name: c.name, ripe: c.ripe, d: c.distance })),
         foodCarried: (o.inventoryFood || []).reduce((n, i) => n + (i.count || 1), 0),
+        items: (o.nearbyItems || []).slice(0, 4).map((i) => ({ name: i.name, d: i.distance != null ? Math.round(i.distance * 10) / 10 : null })),
         inv: (o.inventory || []).slice(0, 8).map((i) => `${i.name} x${i.count}`).join(', ') || null,
         border: o.borderDistance,
         aff: a ? {
@@ -116,7 +117,7 @@ function createBodyJournal({ vaultPath, logDir = null, hostileRange = 10, onNigh
           door: a.door ? a.door.distance : null, bed: a.bed ? a.bed.distance : null, blocks: a.placeable.length,
         } : null,
         hostiles,
-        action: { type: action.type, at: action.at || null, source: action.source || null, ...(action.plan ? { plan: action.plan } : {}), ...(action.layer ? { layer: action.layer, voices: action.voices || [] } : {}) },
+        action: { type: action.type, at: action.at || null, source: action.source || null, ...(action.plan ? { plan: action.plan } : {}), ...(action.layer ? { layer: action.layer, voices: action.voices || [] } : {}), ...(action.harvest ? { harvest: action.harvest } : {}), ...(action.shadow ? { shadow: action.shadow } : {}), ...(action.learned ? { learned: action.learned } : {}) },
         result: action.result || null,
         tookDamage: !!tookDamage,
         drives: drives || null,
