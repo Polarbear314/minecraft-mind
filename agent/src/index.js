@@ -101,17 +101,33 @@ const planRunner = (claudeMode || layersMode) && nature.plans !== false
 const narrator = layersMode && claudeMode
   ? createNarrator({ provider: regionProvider(brain, 'cortex', { timeoutMs: 60000 }), blackboard, logDir: config.decisionLogDir })
   : null;
+// Stage 6: Make, Shelter and Gather as language models (4B/3B/2B), each
+// reading its own top memories (embedding retrieval) and scoring its menu.
+const modelLayers = layersMode && config.upperLayers !== 'off' ? (() => {
+  const { createModelLayers } = require('./brain/modelLayers');
+  const { createMemory, ollamaEmbedder } = require('./vault/memory');
+  const model = (process.env.EMBED_MODEL || '').trim();
+  const memory = createMemory({
+    vaultPath: config.vaultPath,
+    embed: model ? ollamaEmbedder({ model }) : null,
+    cacheFile: model ? path.resolve(__dirname, '..', '..', 'logs', 'memory-embeddings.json') : null,
+  });
+  try { memory.refresh(); } catch (_) { /* empty vault */ }
+  setInterval(() => { try { memory.refresh(); } catch (_) { /* next time */ } }, 5 * 60 * 1000).unref();
+  return createModelLayers({ endpoint: `http://127.0.0.1:${config.cortexPort}`, memory, mode: config.upperLayers });
+})() : null;
 const layerStack = layersMode ? createLayerStack({
   planRunner, blackboard,
   learned: learnedLoader(path.resolve(__dirname, '..', '..', 'logs', 'layers')),
   learnedMode: config.learnedLayers,
+  modelLayers,
 }) : null;
 const decideFn = layersMode
   ? (narrator ? narrator.narrated(layerStack) : layerStack)
   : claudeMode && llmDecideFn
     ? createArbiter({ decide: llmDecideFn, blackboard, toAction, planRunner })
     : llmDecideFn;
-if (layersMode) console.log(`[mind] MIND=layers: the behaviour stack decides (survive > make > shelter > gather > forage > wander); Claude ${narrator ? 'narrates and dreams, but never decides' : 'only dreams'}. Learned layers: ${config.learnedLayers}.`);
+if (layersMode) console.log(`[mind] MIND=layers: the behaviour stack decides (survive > make > shelter > gather > forage > wander); Claude ${narrator ? 'narrates and dreams, but never decides' : 'only dreams'}. Learned layers: ${config.learnedLayers}. Model layers (Make/Shelter/Gather): ${config.upperLayers}.`);
 
 // Always-on regions on the local model, each its own loop (brain/regions.js).
 const localMind = brain.local && brain.local.model

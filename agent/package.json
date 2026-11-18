@@ -14,7 +14,8 @@
     "cortexeval": "node src/tools/cortexEval.js",
     "recall": "node src/tools/recall.js",
     "days": "node src/tools/days.js",
-    "train-layers": "node src/tools/trainLayers.js"
+    "train-layers": "node src/tools/trainLayers.js",
+    "cortex": ".venv-laya\\Scripts\\python src/cortex/layer_service.py"
   },
   "license": "MIT",
   "dependencies": {

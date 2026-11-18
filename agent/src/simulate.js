@@ -1894,6 +1894,42 @@ async function main() {
     'on an editing night a layer with a model is edited; one without a model yet is trained instead');
   dreamCheck(/kept after seeing the evidence/.test(fs.readFileSync(path.join(eLabVault, 'Lab', 'Night Reviews.md'), 'utf8')), 'the edits and their reasons are written to Lab/Night Reviews');
 
+  // ---- Language-model layers (stage 6)
+  console.log('\n=== Model layers ===');
+  const { createModelLayers, menuFor } = require('./brain/modelLayers');
+  const mDusk = lObs({ timeOfDay: 12500, affordances: lAff({ canDigBelow: true, roof: false, placeable: ['dirt'], canPlace: ['ahead', 'left'] }), inventory: [{ name: 'dirt', count: 5 }] });
+  const mShelterMenu = menuFor('shelter', mDusk);
+  dreamCheck(mShelterMenu.map((m) => m.key).join(',') === 'dig below,place above,place ahead,place left,stay,nothing',
+    'a model layer\'s menu is what it could do right now, plus "nothing: not for me"');
+  dreamCheck(menuFor('make', lObs({ inventory: [{ name: 'wheat', count: 3 }], tableNear: true })).some((m) => m.key === 'craft bread'), 'Make\'s menu offers bread when it carries wheat by a table');
+  dreamCheck(!menuFor('shelter', lObs({ affordances: lAff({}) })).some((m) => m.key === 'stay'), 'by day, out in the open, staying put is not on Shelter\'s menu');
+  const mAsked = [];
+  const mFetch = async (url, opts) => { const body = JSON.parse(opts.body); mAsked.push(body); const i = Math.max(0, body.acts.findIndex((t) => /dig down/.test(t))); return { ok: true, json: async () => ({ pick: i, p: 0.8, probs: [0.8], ms: 40, model: 'test' }) }; };
+  let mClock = 2000000;
+  const mModels = createModelLayers({ mode: 'shadow', fetchImpl: mFetch, memory: { retrieve: async () => [{ title: 'Make A Safe Place Before Dark', text: 'dig in at dusk' }] }, now: () => mClock });
+  const mStack = createLayerStack({ random: () => 0.99, modelLayers: mModels });
+  const mFirst = mStack(lDrives(), mDusk);
+  await new Promise((r) => setTimeout(r, 20));
+  mClock += 1500;
+  const mSecond = mStack(lDrives(), mDusk);
+  const mShelterAsk = mAsked.find((b) => b.layer === 'shelter');
+  dreamCheck(!!mShelterAsk && /keeps it safe at night/.test(mShelterAsk.job) && mShelterAsk.memories.length === 1 && mShelterAsk.acts.some((t) => /dig down/.test(t)),
+    'each model layer is asked with its job, its own top memories (retrieval) and its menu');
+  dreamCheck(!mFirst.shadow || !mFirst.shadow.shelter, 'the body never waits for a model: the first tick goes on without its answer');
+  dreamCheck(mSecond.layer === 'shelter' && mSecond.type === 'dig' && mSecond.shadow.shelter.pick === 'dig below' && mSecond.shadow.shelter.hand === 'dig below' && !mSecond.learned,
+    'in shadow mode a model layer\'s pick is logged next to the hand-written one, which acts');
+  const mOnFetch = async (url, opts) => { const body = JSON.parse(opts.body); const i = body.acts.findIndex((a) => /set a block over my head/.test(a)); return { ok: true, json: async () => ({ pick: Math.max(0, i), p: 0.9, probs: [], ms: 30 }) }; };
+  const mOn = createModelLayers({ mode: 'on', fetchImpl: mOnFetch, now: () => mClock });
+  const mOnStack = createLayerStack({ random: () => 0.99, modelLayers: mOn });
+  mOnStack(lDrives(), mDusk); await new Promise((r) => setTimeout(r, 20)); mClock += 1500;
+  const mOnAct = mOnStack(lDrives(), mDusk);
+  dreamCheck(mOnAct.layer === 'shelter' && mOnAct.type === 'place' && mOnAct.at === 'above' && mOnAct.learned === 'shelter',
+    'in "on" mode the model\'s pick acts (here Shelter roofs over before digging)');
+  const mDown = createModelLayers({ mode: 'on', fetchImpl: async () => { throw new Error('no service'); }, now: () => mClock });
+  const mDownStack = createLayerStack({ random: () => 0.99, modelLayers: mDown });
+  mDownStack(lDrives(), mDusk); await new Promise((r) => setTimeout(r, 20));
+  dreamCheck(mDownStack(lDrives(), mDusk).type === 'dig', 'with the model service down, the hand-written layers simply carry on');
+
   // ---- Weighted memory and forgetting (docs/design-subsumption.md, stage 2)
   console.log('\n=== Weighted memory ===');
   const memMod = require('./vault/memory');

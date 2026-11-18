@@ -72,6 +72,9 @@ function createLayerStack({
   learned = () => ({}),
   learnedMode = 'shadow',
   learnedSalt = 0.1, // a learned layer sometimes samples instead of taking its top pick
+  // Stage 6: the language-model layers for Make, Shelter and Gather
+  // (brain/modelLayers.js), shadowing or replacing the hand-written ones.
+  modelLayers = null,
 } = {}) {
   const ownReflexes = createReflexes();
   let lastMade = 0;
@@ -315,6 +318,23 @@ function createLayerStack({
       proposals[name] = LAYERS[name](drives, o, rx, { inhibited, foodChance });
     }
     if (anyLearned) applyLearned('wander', proposals, drives, o, rx, x, learnedOut);
+    if (modelLayers) {
+      const keyOf = (p) => (!p ? 'nothing' : p.plan ? 'plan step' : p.type === 'idle' ? 'stay'
+        : p.type === 'craft' ? `craft ${String(p.item || '').replace(/^.*_planks$/, 'planks').replace('crafting_table', 'table')}`
+          : p.type === 'dig' && p.target && /_(log|stem)$/.test(p.target.name || '') ? 'dig log'
+            : p.type === 'place' && p.item === 'crafting_table' ? 'place table' : `${p.type}${p.at ? ` ${p.at}` : p.target && p.target === 'bed' ? ' bed' : ''}`);
+      for (const name of ['make', 'shelter', 'gather']) {
+        const ans = modelLayers.consider(name, o, drives, { planStep: name === 'make' && proposals.make && proposals.make.plan ? proposals.make : null });
+        if (!ans) continue;
+        learnedOut.shadow[name] = { pick: ans.key, p: Math.round(ans.p * 100) / 100, hand: keyOf(proposals[name]), ms: ans.ms ?? null };
+        const swap = modelLayers.actFor(ans);
+        if (swap === undefined) continue; // shadow mode: logged only
+        if (name === 'make' && inhibited) continue; // Brooks's wires still hold over a model layer
+        proposals[name] = swap;
+        learnedOut.learnedBy.push(name);
+      }
+      modelLayers.tick(); // after asking: every layer is asked on the first tick
+    }
     const voices = ORDER.filter((n) => proposals[n]);
     const layer = voices[0] || 'wander';
     const act = { ...(proposals[layer] || { type: 'idle' }) };

@@ -62,6 +62,26 @@
 - *Embeddings:* `nomic-embed-text` pulled (274 MB) and `EMBED_MODEL=nomic-embed-text` set in `agent/.env`; `vault/memory.js` retrieval now uses embeddings ("hostile at nightfall and I am out in the open" finds *Died In The Night Under Cover* without shared words). Familiarity alone now gives a Concept at most 0.6 weight, so Pig and Cow no longer outrank fitting memories.
 - `npm run sim`: 314 checks.
 
+**Stage 6 built (2026-11-17): Make, Shelter and Gather as language models, in shadow.**
+
+| Layer | Model (4-bit, on the 3060) | Asked every |
+|---|---|---|
+| Make | Qwen3-4B-Instruct-2507 (~4B, Apache 2.0) | 5 ticks |
+| Shelter | Qwen2.5-3B-Instruct (~3B, Qwen research licence) | 2 ticks |
+| Gather | Qwen3-1.7B (~2B, Apache 2.0) | 1 tick |
+
+One family, so size is the main difference between the layers (the taper: 4B → 3B → 2B → classifiers → hand-written floor). Gemma and Llama were out: they need a Hugging Face sign-in and licence.
+- *The service* (`agent/src/cortex/layer_service.py`, `npm run cortex` or `windows/start-cortex.bat`): all three models in one process with Hugging Face transformers (not Ollama), so their insides are reachable for 7b (`/activations`). A layer doesn't write an answer: its acts are listed as A, B, C…, and one forward pass gives the probability of each letter. That is reliable even at 1.7B, and the probabilities are the layer's "how sure".
+- *The layers* (`agent/src/brain/modelLayers.js`): each due layer builds its menu from what the body could do right now (Shelter: dig below, roof over, wall an open side, the bed, stay; Gather: pick up, break wood, break a block to carry; Make: go on with the plan, bread, set the table down, planks, a table), always with "nothing: not for me right now". Its question is the situation in words, its job, and its **top 3 memories from embedding retrieval** (FreeLAB's role by day). The body never waits: answers arrive asynchronously and a layer's last answer stands for 15 s.
+- *Modes* (`UPPER_LAYERS` in `agent/.env`): `off`, `shadow` (default: each pick is logged next to the hand-written layer's in `action.shadow`), `on` (the pick acts, unless it chose "nothing" or is under 35% sure; Brooks's wires still inhibit Make). With the service down, the hand-written layers simply carry on.
+- *First live test* (the three models loaded: **6.5 GB** of GPU memory; **90–190 ms** per answer after a 1 s warm-up). Untrained:
+  - Make baked bread when carrying wheat by a table (100%).
+  - Shelter stayed put when sealed in at night (98%) and dug in at dusk (44%, "stay" 39%).
+  - Two flaws, fixed: (1) Shelter chose "stay closed in" at sunny midday (97%), so "stay" is now on its menu only in the evening or when enclosed; it then answers "not for me" at midday (99%). (2) **Position bias**: the 1.7B Gather said "nothing" 100% whenever that was the last option, and picked up the carrot 99–100% when it wasn't. Each question is now asked twice, the options shuffled each time, and the probabilities averaged.
+  - Still open: retrieval returns much the same three high-weight skills for every situation; the layers' memories need more relevance and less weight.
+- Kept in shadow until the baseline days are in. Retraining them (stage 7) needs Unsloth/PEFT and the Anthropic-terms check; editing them (7b) is designed above.
+- `npm run sim`: 321 checks (7 new).
+
 **Eat to heal (2026-11-17, the gap Opus found).** Survive now eats when health is at 10 or below, the food bar is under 18 (where health starts coming back), and food is carried, whatever the hunger drive says. Live, right after the restart: three potatoes eaten in a row at low health.
 
 `npm run sim`: 307 checks.

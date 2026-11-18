@@ -221,11 +221,22 @@ function createMemory({ vaultPath, embed = null, cacheFile = null, now = () => D
       if (!sims) embedOk = false; // twice failed: no model here, fall back to words for good
     }
     const qv = sims ? null : tfidf(words(q));
+    const raw = pool.map((e, i) => (sims ? sims[i] : lexSim(qv, e)));
+    // Relevance first (2026-11-17: with raw similarities bunched between 0.5
+    // and 0.7, the same three high-weight skills came back for every
+    // situation). Similarity is stretched across this question's pool
+    // (0 = least, 1 = most relevant); weight and recency then break near-ties
+    // (a weightless note keeps 40% of its score), so an active goal still
+    // beats a finished one that says the same.
+    const live = raw.filter((s) => s > 0);
+    const lo = live.length ? Math.min(...live) : 0;
+    const hi = live.length ? Math.max(...live) : 1;
     return pool.map((e, i) => {
-      const sim = sims ? sims[i] : lexSim(qv, e);
+      const sim = raw[i];
+      const rel = hi > lo ? (sim - lo) / (hi - lo) : (sim > 0 ? 1 : 0);
       const recency = recencyOf(e);
       return { title: e.title, kind: e.kind, sim: round3(sim), weight: round3(e.weight), recency: round3(recency),
-        score: round3(sim * e.weight * recency), text: e.text.slice(0, 300) };
+        score: round3(Math.pow(rel, 1.5) * (0.4 + 0.6 * e.weight) * recency), text: e.text.slice(0, 300) };
     }).filter((r) => r.sim > 0).sort((a, b) => b.score - a.score).slice(0, k);
   }
 

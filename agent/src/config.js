@@ -43,6 +43,12 @@ const config = {
   // learned layer that passed its gate acts). Models: logs/layers/.
   learnedLayers: (['off', 'shadow', 'on'].includes((process.env.LEARNED_LAYERS || '').trim().toLowerCase())
     ? (process.env.LEARNED_LAYERS || '').trim().toLowerCase() : 'shadow'),
+  // Stage 6 language-model layers for Make/Shelter/Gather (MIND=layers):
+  // 'off', 'shadow' (default: their picks are logged, the hand-written layers
+  // act) or 'on'. Needs the model service: npm run cortex (port CORTEX_PORT).
+  upperLayers: (['off', 'shadow', 'on'].includes((process.env.UPPER_LAYERS || '').trim().toLowerCase())
+    ? (process.env.UPPER_LAYERS || '').trim().toLowerCase() : 'shadow'),
+  cortexPort: intOr('CORTEX_PORT', 3010),
   anthropicKey: process.env.ANTHROPIC_API_KEY ? process.env.ANTHROPIC_API_KEY.trim() : null,
   llmModel: (process.env.LLM_MODEL || 'claude-haiku-4-5').trim(),
   // Dreaming is rare and benefits most from deeper reasoning, so it can run on
