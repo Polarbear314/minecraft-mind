@@ -28,8 +28,9 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-OUT = os.path.join(ROOT, "logs", "steer-trial")
-NAME = "Qwen/Qwen3-1.7B"
+# STEER_DIR / STEER_MODEL select another flaw and layer (default: Gather's, part 1).
+OUT = os.path.join(ROOT, os.environ["STEER_DIR"]) if os.environ.get("STEER_DIR") else os.path.join(ROOT, "logs", "steer-trial")
+NAME = os.environ.get("STEER_MODEL", "Qwen/Qwen3-1.7B")
 LETTERS = "ABCDEFGHIJKL"
 PASSES = 2
 
@@ -57,6 +58,7 @@ def load():
     model = AutoModelForCausalLM.from_pretrained(NAME, quantization_config=quant, device_map="cuda", dtype=torch.float16)
     model.eval()
     letter_ids = [tok.encode(L, add_special_tokens=False)[0] for L in LETTERS]
+    os.makedirs(OUT, exist_ok=True)
     print(f"[trial] {NAME} (sandbox copy, 4-bit) loaded in {time.time() - t0:.0f}s, "
           f"{torch.cuda.memory_allocated() / 1e9:.2f} GB", flush=True)
 
@@ -70,7 +72,10 @@ def prompt(case, acts):
     lines += ["", "Which ONE of these should I do now?"] + [f"{LETTERS[i]}. {a}" for i, a in enumerate(acts)]
     lines += ["", "Answer with the letter only."]
     msgs = [{"role": "user", "content": "\n".join(lines)}]
-    return tok.apply_chat_template(msgs, enable_thinking=False, add_generation_prompt=True, tokenize=False)
+    try:
+        return tok.apply_chat_template(msgs, enable_thinking=False, add_generation_prompt=True, tokenize=False)
+    except TypeError:
+        return tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
 
 
 def orders(case):
@@ -103,8 +108,9 @@ def score_case(case):
         for pos, i in enumerate(order):
             total[keys[i]] += probs[pos] / PASSES
     pick = max(total, key=total.get)
+    ok = pick in case["rightAny"] if case.get("rightAny") else pick == case["right"]
     return {"id": case["id"], "set": case["set"], "kind": case.get("kind"), "probs": {k: round(v, 4) for k, v in total.items()},
-            "pick": pick, "right": case["right"], "ok": pick == case["right"]}
+            "pick": pick, "right": case["right"], "rightAny": case.get("rightAny"), "ok": ok}
 
 
 def summary(rows, half=None):
@@ -117,7 +123,7 @@ def summary(rows, half=None):
         out[s] = {
             "n": len(r),
             "right": sum(x["ok"] for x in r),
-            "pRight": round(sum(x["probs"].get(x["right"], 0) for x in r) / len(r), 3),
+            "pRight": round(sum(sum(x["probs"].get(k, 0) for k in (x.get("rightAny") or [x["right"]])) for x in r) / len(r), 3),
             "pNothing": round(sum(x["probs"].get("nothing", 0) for x in r) / len(r), 3),
             "picks": {k: sum(1 for x in r if x["pick"] == k) for k in sorted({x["pick"] for x in r})},
         }

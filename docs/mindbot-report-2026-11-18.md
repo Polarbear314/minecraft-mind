@@ -20,7 +20,7 @@ Over the project MindBot has had three different minds:
 - **Learned layers:** none has yet outperformed its hand-written version on held-out data.
 - **Weight editing:** Opus edits the small, readable classifiers carefully, withdrawing edits whose effects it judges too broad. In a sandbox trial on a 1.7-billion-parameter language model, a first steering edit failed. A second approach worked partly: Opus received a map of all 172,032 of the model's neurons, built from the creature's own experiences, and wrote neuron-level edits itself. The edit fixed the targeted flaw on situations it had never seen, far better than random edits of the same size. But it also made the model act when it shouldn't.
 - **The broader pattern,** which matches the newly published MIT work: an AI can remove a learned *tendency* from another model's weights, but installing *judgement* by direct editing proved much harder.
-- **A third attempt installed the judgement:** one closed-form solve fitted to 80 of the creature's own labelled situations, written into 256 neurons near the model's output. It improved the unseen test cases and the controls together, the first edit to do both. When Opus chose *where* to write the same solve, the result was worse than no edit. **What wrote the judgement in was fitting examples from the creature's life, not understanding the model.** When the teacher learned only from the creature's own outcomes, the edit instead taught it to gather at night: its protected life had never shown it the danger.
+- **A third attempt installed the judgement:** one closed-form solve fitted to 80 of the creature's own labelled situations, written into 256 neurons near the model's output. It improved the unseen test cases and the controls together, the first edit to do both. When Opus chose *where* to write the same solve, the result was worse than no edit. **What wrote the judgement in was fitting examples from the creature's life, not understanding the model.** When the teacher learned only from the creature's own outcomes, the edit instead taught it to gather at night: its protected life had never shown it the danger. On a second flaw in a second model (Shelter digging in at midday), the rule teacher didn't generalise, but Opus as teacher improved both sides again. Across both flaws, Opus giving firm labels was the most reliable teacher.
 
 ---
 
@@ -336,6 +336,26 @@ Across all five teachers the edit was a faithful copy of the teacher: its lesson
 
 ---
 
+### 5.7 A second flaw, on a second model
+
+To see whether the closed-form write holds beyond one case, it was tried on a second flaw in a different model.
+- **The model:** Shelter's, Qwen2.5-3B, a different version from Gather's.
+- **The flaw:** Shelter wants to dig in or wall up at midday, and sometimes says "nothing" at dusk when it should shelter.
+- **The cases:** 40 daytime cases where doing nothing was right, and 40 dusk or night cases where sheltering was right, all from the logs.
+
+| Edit (Shelter; held-out half: 20 test, 20 controls) | Test right | Controls right |
+|---|---|---|
+| Unedited | 7 | 11 |
+| Rule teacher (the hand-written layer's own acts) | 8 | 11 |
+| Random neurons | 7 | 11 |
+| **Opus as teacher** | **12** | **13** |
+
+**The rule teacher didn't replicate:** on held-out cases it did no better than random neurons. **Opus as teacher did:** both sides improved.
+- **Why the difference:** Opus agreed with the rule on *whether* to shelter in every one of the 80 teacher situations, but not on *how*. The hand-written layer's acts were split three ways, depending on details of its routine the model can't see in the text. Opus taught one consistent act: dig in. A consistent lesson was easier to write in and to carry over to new situations than a correct but inconsistent one.
+- **Why Shelter was harder:** at dusk the creature's situation text still begins "It is day", because Minecraft's daylight flag stays on until night. Only one trailing sentence ("Evening is here or coming") separates dusk from midday.
+
+**Across both flaws,** Opus as teacher, with firm labels, was the most reliable of the teachers tried. Its value was judgement plus simplification, turning a complicated routine into one clear lesson: a teacher's skill rather than a surgeon's. The evidence is still small: 20 held-out cases per side, one run each.
+
 ## 6. Relation to other work
 
 **The MIT report, now public.** "Sparks of Weight-Space Programming" (Takehi, Teoh, Zhang and Khattab, November 2026) and its edited checkpoint are now available. For small networks (a car-driving policy, Breakout), GPT-6 Astra wrote new weights from the raw weights in a single reply. For the Qwen model it had a budget of 50 forward passes and "located the cause and edited it out": the model's tendency to loop.
@@ -434,7 +454,7 @@ If the editor is part of the mind, MindBot already modifies itself in its sleep,
 4. **Morning check** of the day metrics, the night reviews, and how often the model layers agree with the hand-written ones.
 
 **This week:**
-5. **A second editing target that is a tendency,** for example Shelter staying put too long at dusk. Run Opus's neuron-level loop, a "Sparks-style" single-direction edit and random edits side by side. Together with the closed-form write, this shows on two cases which kinds of flaw yield to surgery and which need a fit to examples, and can be compared directly with the published work.
+5. **A third flaw, and repeats:** the two flaws so far rest on one run each with 20 held-out cases per side. Repeating them with more cases, and adding a third flaw (for example Make setting its crafting table down whenever it carries one), would show how reliable Opus-as-teacher is.
 6. **Outcome labels and a gate for the language-model layers,** so a retrained or edited model can ever be trusted with the body.
 7. **More days of the fixed creature,** so the learned bottom layers have enough to learn from and the day-by-day measures have a baseline. This is the project's core result.
 

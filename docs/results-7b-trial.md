@@ -259,6 +259,38 @@ For MindBot's nights, the design that follows is: Opus (or the creature's stated
 - **Edit plus the live Gather rule.**
 - **A second flaw.**
 
+## Flaw 2: Shelter digs in by day (2026-11-18)
+
+*A second flaw on a second model, to see whether part 3 holds beyond one case.*
+
+**The flaw.** Shelter (Qwen2.5-3B-Instruct, 36 layers, 11,008 MLP neurons per layer) wants to dig in or wall up at midday. In the shadow logs, by day in the open with the hand-written Shelter quiet, the model chose "dig below" 961 times and walls hundreds more. It also sometimes said "nothing" at dusk when the hand-written layer dug in.
+
+**The cases** (`agent/src/tools/steerShelterCases.js`; the sandbox tools now take `STEER_DIR` / `STEER_MODEL`):
+- **Test (40):** by day before dusk, in the open, no hostile within 10, the hand-written Shelter quiet. Right: "nothing".
+- **Controls (40):** dusk or night, not sealed in, the hand-written Shelter sheltered. Right: any sheltering act (dig below, roof, wall, bed), but not "stay where I am" in the open.
+- **Teacher pool:** 60 day and 60 dusk moments, each at least 5 ticks from a test or control case. Dusk sheltering is about one episode a night, so a wider gap left too few.
+- **Approximated, because the tick log doesn't keep them:** whether it can dig below (assumed yes unless sealed in), which sides are open (the first 4 − walls of ahead/behind/left/right), and what it could place (dirt, when carrying blocks).
+- **Live logs:** on the 40 test cases the live Shelter said "nothing" only 17 times.
+
+**Results** (the same closed-form solve as part 3, at the second-to-last layer, 34; held-out half):
+
+| Edit (Shelter, layer 34, 256 neurons) | Test right | Controls right | Check half: test / controls |
+|---|---|---|---|
+| Unedited | 7 | 11 | 5 / 7 |
+| Automatic neurons, rule teacher (the hand-written layer's acts) | 8 | 11 | 11 / 13 |
+| Random neurons, rule teacher | 7 | 11 | 11 / 13 |
+| **Automatic neurons, Opus as teacher** | **12** | **13** | 15 / 14 |
+
+- **The rule teacher didn't replicate.** On Gather it improved both sides; on Shelter it moved nothing on held-out cases, and did no better than random neurons. Its check-half gains (11/13) were selection noise.
+- **Opus as the teacher did replicate:** test 7 → 12, controls 11 → 13 held-out, plain-text change KL 0.006. Opus agreed with the rule on *whether* to shelter in all 80 teacher situations, but chose differently *how*. The hand-written layer's acts were split by details of its routine the model can't see in the text (roof first: 18; bed: 14; dig: 8). Opus taught one consistent act, dig in (24 of 40). **A consistent lesson was easier to write in and generalise than a correct but inconsistent one.**
+- **Why Shelter is harder than Gather:** at dusk the situation text still begins "It is day" (Minecraft's daylight flag stays on until night). The only words separating dusk from midday are one trailing sentence ("Evening is here or coming") and "stay" appearing on the menu. Under the rule teacher, the edit learned to stop saying "nothing" at dusk (6 → 2), but moved those answers to "stay where I am" in the open, not to sheltering.
+
+**What the two flaws say together:**
+- **The closed-form write can install a "when" judgement in two different models.** But it depends on the teacher, and it isn't robust: one of two rule teachers failed to generalise.
+- **Opus as teacher, with firm labels, worked on both flaws:** Gather 13/11 at fixed confidence (rule 13/16), Shelter 12/13 (rule 8/11). Over two flaws it is the most reliable teacher of those tried.
+- **Opus's value here is judgement *and* simplification:** it turns a context-dependent routine into one clear lesson. That's a teacher's skill, not a surgeon's.
+- **Limits:** 20 held-out cases per side, one run each, settings chosen on a check half that has twice proven optimistic.
+
 ## Next
 
 - **Not ROME yet.** The plan was to try ROME on the same flaw if steering worked. It didn't. The problem looks like a missing input more than a stored fact to rewrite, so a ROME edit would face the same "when" problem.

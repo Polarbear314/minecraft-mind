@@ -77,13 +77,21 @@ TEACHER = None  # set by --teacher laya
 def teacher_cases():
     """80 logged situations, none from the test set: 40 where gathering was right, 40 where 'nothing' was."""
     cases = st.read_jsonl(os.path.join(st.OUT, "map.jsonl"))
-    pos = spread([c for c in cases if c["gatherable"] and "pickup" in c["keys"]], N_EACH)
-    neg = spread([c for c in cases if not c["gatherable"] and "pickup" in c["keys"]], N_EACH)
+    if cases and "teach" in cases[0]:  # another flaw: each pool situation carries its right act
+        pos = spread([c for c in cases if c["teach"] != "nothing"], N_EACH)
+        neg = spread([c for c in cases if c["teach"] == "nothing"], N_EACH)
+    else:
+        pos = spread([c for c in cases if c["gatherable"] and "pickup" in c["keys"]], N_EACH)
+        neg = spread([c for c in cases if not c["gatherable"] and "pickup" in c["keys"]], N_EACH)
     out = []
     for c in pos + neg:
-        right = "pickup" if c["gatherable"] else "nothing"
+        right = c["teach"] if "teach" in c else ("pickup" if c["gatherable"] else "nothing")
         q = {k: (SMOOTH if k == right else (1 - SMOOTH) / (len(c["keys"]) - 1)) for k in c["keys"]}
-        if TEACHER:  # a learned teacher (laya_teacher.py): its probability of pick up vs nothing; other acts 0.04
+        if TEACHER and "dist" in TEACHER.get(c["id"], {}):  # a teacher by menu (steerOpusTeacherMenu.js)
+            t = TEACHER[c["id"]]
+            q = {k: t["dist"].get(k, 0.01) for k in c["keys"]}
+            right = t["act"]
+        elif TEACHER:  # a learned teacher (laya_teacher.py): its probability of pick up vs nothing; other acts 0.04
             t = TEACHER[c["id"]]
             others = [k for k in c["keys"] if k not in ("pickup", "nothing")]
             q = {k: 0.04 / max(1, len(others)) for k in others}
@@ -100,6 +108,7 @@ def letter_logprobs(logits, n):
 
 def targets(layer):
     """Per example and order: the delta at the answer position, the keys, and protected values."""
+    os.makedirs(OUT, exist_ok=True)
     for p in st.model.parameters():
         p.requires_grad_(False)
     dp = st.model.model.layers[layer].mlp.down_proj
@@ -131,7 +140,7 @@ def targets(layer):
                 acts = [c["acts"][j] for j in order]
                 q = torch.tensor([c["teacher"][c["keys"][j]] for j in order], device="cuda")
                 ids = st.tok(st.prompt(c, acts), return_tensors="pt").to("cuda")
-                delta = torch.zeros(2048, device="cuda", requires_grad=True)
+                delta = torch.zeros(st.model.config.hidden_size, device="cuda", requires_grad=True)
                 opt = torch.optim.Adam([delta], lr=lr)
                 state["delta"] = delta
                 for step in range(STEPS):
@@ -274,6 +283,7 @@ def auto_where(layer, k):
     rest = torch.cat([torch.cat([r["protect"] for r in T["rows"]]).float(), T["plain"].float()]).abs().mean(0)
     ratio = ans / (rest + 1e-3)
     cols = ratio.topk(k).indices.tolist()
+    os.makedirs(OUT, exist_ok=True)
     json.dump({"layer": layer, "neurons": cols, "how": f"the {k} neurons most active at the answer position relative to other text"},
               open(os.path.join(OUT, f"where-auto-{layer}.json"), "w"), indent=1)
     print(f"[auto] layer {layer}: {k} neurons")
@@ -284,13 +294,13 @@ SUFFIX = ""
 
 def main():
     global TEACHER, SUFFIX
-    if arg("teacher") in ("laya", "laya-opus", "opus", "opus-hard"):
+    if arg("teacher") in ("laya", "laya-opus", "opus", "opus-hard"):  # files in OUT (per flaw)
         TEACHER = json.load(open(os.path.join(OUT, f"teacher-{arg('teacher')}.json"), encoding="utf8"))["q"]
         SUFFIX = f"-{arg('teacher')}"
     cmd = sys.argv[1]
     if cmd == "random":
         layer, k, seed = int(arg("layer")), int(arg("k")), int(arg("seed", 0))
-        cols = random.Random(seed).sample(range(6144), k)
+        cols = random.Random(seed).sample(range(int(arg("width", 6144))), k)
         json.dump({"layer": layer, "neurons": cols, "how": f"{k} random neurons (seed {seed})"},
                   open(os.path.join(OUT, f"where-random-{layer}-{seed}.json"), "w"), indent=1)
         return
