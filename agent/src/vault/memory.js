@@ -96,7 +96,8 @@ function initialWeight(kind, data, title = '') {
       return clamp01(v);
     }
     case 'concept':
-      return clamp01(0.15 + Math.abs(Number(data.valence) || 0) * 0.5 + Math.log10(1 + (Number(data.encounter_count) || 0)) / 8);
+      // Familiar things matter, but familiarity alone must not outrank a fitting memory: at most 0.6.
+      return Math.min(0.6, 0.1 + Math.abs(Number(data.valence) || 0) * 0.4 + Math.log10(1 + (Number(data.encounter_count) || 0)) / 12);
     case 'goal': return data.status === 'active' || !data.status ? 0.6 : 0.25;
     case 'plan': return data.status === 'trying' ? 0.5 : data.status === 'dropped' ? 0.1 : 0.3;
     case 'skill': return data.status === 'withdrawn' ? 0.1 : 0.7;
@@ -120,7 +121,7 @@ function readEntry(kind, file, st) {
 }
 
 /** Ollama embeddings (POST /api/embed). Returns embed(texts) -> vectors, or null on failure. */
-function ollamaEmbedder({ model, host = 'http://127.0.0.1:11434', timeoutMs = 20000 } = {}) {
+function ollamaEmbedder({ model, host = 'http://127.0.0.1:11434', timeoutMs = 120000 } = {}) {
   if (!model) return null;
   return async function embed(texts) {
     const res = await fetch(`${host.replace(/\/$/, '')}/api/embed`, {
@@ -187,10 +188,12 @@ function createMemory({ vaultPath, embed = null, cacheFile = null, now = () => D
 
   async function vectorsFor(list) {
     const need = list.filter((e) => !vecCache[`${e.file}|${e.mtimeMs}`]);
-    for (let i = 0; i < need.length; i += 64) {
-      const batch = need.slice(i, i + 64);
-      const vecs = await embed(batch.map((e) => e.text.slice(0, 1500)));
+    for (let i = 0; i < need.length; i += 32) {
+      const batch = need.slice(i, i + 32);
+      // nomic-embed-text wants its task prefix: documents are "search_document".
+      const vecs = await embed(batch.map((e) => `search_document: ${e.text.slice(0, 1500)}`));
       batch.forEach((e, j) => { vecCache[`${e.file}|${e.mtimeMs}`] = vecs[j]; });
+      if (cacheFile && (i / 32) % 8 === 7) { try { fs.writeFileSync(cacheFile, JSON.stringify(vecCache)); } catch (_) { /* fine */ } }
     }
     if (need.length && cacheFile) { try { fs.writeFileSync(cacheFile, JSON.stringify(vecCache)); } catch (_) { /* fine */ } }
     return list.map((e) => vecCache[`${e.file}|${e.mtimeMs}`]);
@@ -208,11 +211,14 @@ function createMemory({ vaultPath, embed = null, cacheFile = null, now = () => D
     const pool = [...entries.values()].filter((e) => !kinds || kinds.includes(e.kind));
     let sims = null;
     if (embedOk) {
-      try {
-        const [qv] = await embed([q]);
-        const vs = await vectorsFor(pool);
-        sims = vs.map((v) => (v ? Math.max(0, cosine(qv, v)) : 0));
-      } catch (_) { embedOk = false; sims = null; } // no model: fall back to words, for good
+      for (let attempt = 0; attempt < 2 && !sims; attempt++) {
+        try {
+          const [qv] = await embed([`search_query: ${q}`]);
+          const vs = await vectorsFor(pool);
+          sims = vs.map((v) => (v ? Math.max(0, cosine(qv, v)) : 0));
+        } catch (_) { sims = null; } // (the first call may time out while Ollama loads the model)
+      }
+      if (!sims) embedOk = false; // twice failed: no model here, fall back to words for good
     }
     const qv = sims ? null : tfidf(words(q));
     return pool.map((e, i) => {

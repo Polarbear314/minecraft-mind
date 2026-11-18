@@ -1648,6 +1648,10 @@ async function main() {
   const lStarving = calm(lDrives({ hunger: 90 }), lObs({ inventoryFood: [{ name: 'bread' }], inventory: [{ name: 'bread', count: 1 }] }));
   dreamCheck(lStarving.layer === 'survive' && lStarving.type === 'eat', 'starving with food in hand: Survive eats');
   dreamCheck(calm(lDrives({ hunger: 60 }), lObs()).type === 'seekFood', 'hungry with nothing to eat or hunt: Forage goes looking');
+  const lHurtFed = calm(lDrives({ hunger: 20 }), lObs({ health: 4, food: 12, inventoryFood: [{ name: 'carrot', count: 3 }], inventory: [{ name: 'carrot', count: 3 }] }));
+  const lHurtFull = calm(lDrives({ hunger: 5 }), lObs({ health: 4, food: 19, inventoryFood: [{ name: 'carrot', count: 3 }], inventory: [{ name: 'carrot', count: 3 }], affordances: lAff({ canDig: [] }) }));
+  dreamCheck(lHurtFed.layer === 'survive' && lHurtFed.type === 'eat' && lHurtFull.type !== 'eat',
+    'badly hurt with food in the pack, Survive eats to heal (until the food bar is high enough for health to come back)');
   const lWander = calm(lDrives(), lObs({ affordances: lAff({ canDig: [] }) }));
   dreamCheck(lWander.layer === 'wander' && lWander.type === 'explore', 'nothing else to do: Wander explores');
   const lFar = calm(lDrives({ fear: 80 }), lObs({ nearestHostile: { name: 'zombie', distance: 15 }, affordances: lAff({ canDig: [] }) }));
@@ -1706,6 +1710,14 @@ async function main() {
   const fPlace = fMaker()(lDrives(), lObs({ inventory: [fWheat, { name: 'crafting_table', count: 1 }] }));
   dreamCheck(fPlace.type === 'place' && fPlace.item === 'crafting_table', 'three wheat, carrying a table: Make sets it down first');
   dreamCheck(fMaker()(lDrives(), lObs({ inventory: [fWheat, { name: 'oak_planks', count: 4 }] })).item === 'crafting_table', 'three wheat, no table: Make makes one');
+  const bSeen = [];
+  const bPlans = { next: (o, { emergency }) => { bSeen.push(emergency); return emergency ? null : { type: 'explore', plan: 'Learn Where The Bed Is' }; } };
+  let bClock = 900000;
+  const bStack = createLayerStack({ planRunner: bPlans, random: () => 0.99, now: () => (bClock += 1000) });
+  const bAct = bStack(lDrives({ hunger: 10 }), lObs({ inventory: [fWheat, { name: 'oak_log', count: 2 }], inventoryFood: [{ name: 'carrot', count: 5 }] }));
+  const bLater = bStack(lDrives({ hunger: 10 }), lObs({ inventory: [{ name: 'dirt', count: 2 }], inventoryFood: [{ name: 'carrot', count: 5 }] }));
+  dreamCheck(bAct.layer === 'make' && bAct.type === 'craft' && bAct.item === 'oak_planks' && bSeen[0] === true && bLater.plan === 'Learn Where The Bed Is',
+    'carrying wheat, Make works toward bread before its running plan (the plan pauses), then the plan goes on');
   // Perception: crops are seen, with how ripe they are.
   const fBlocks = { '1,0': { name: 'wheat', getProperties: () => ({ age: 3 }) }, '4,0': { name: 'carrots', getProperties: () => ({ age: 7 }) }, '2,0': { name: 'crafting_table' } };
   const fP = (x) => ({ x, z: 0, distanceTo: () => x, key: `${x},0` });
@@ -1802,6 +1814,85 @@ async function main() {
   const sOn = createLayerStack({ random: () => 0.99, learned: () => ({ forage: { model: { ...sHuntModel, b: [0, 0, 2, 1, 0, -1] }, served: true } }), learnedMode: 'on' });
   const sNoCrop = sOn(sDr, lObs({ nearbyEntities: [{ name: 'cow', distance: 4, position: { x: 4, y: 64, z: 0 } }] }));
   dreamCheck(sNoCrop.type === 'swingAt' && sNoCrop.learned === 'forage', 'if its top pick can\'t be done here, a learned layer takes its next one');
+
+  // ---- Nightly learning (stage 5)
+  const { nightlyLearning, readCorrections } = require('./learn/nightly');
+  const { missedFood } = exm;
+  const nDir = fs.mkdtempSync(path.join(os.tmpdir(), 'minecraft-mind-layers-'));
+  const nVault = fs.mkdtempSync(path.join(os.tmpdir(), 'minecraft-mind-lab-'));
+  const nTicks = [];
+  for (let i = 0; i < 400; i++) {
+    const hungry = i > 300;
+    nTicks.push(sTk(i, { food: hungry ? 4 : 14, near: i === 20 ? [{ name: 'cow', d: 6 }] : [],
+      action: i % 50 === 5 ? { type: 'swingAt', layer: 'forage', voices: ['forage', 'wander'] } : { type: 'explore', layer: 'wander', voices: ['wander'] } }));
+  }
+  let nPrompt = '';
+  const nFits = [];
+  const nSummary = await nightlyLearning({
+    ticks: nTicks, since: null, dir: nDir, vaultPath: nVault, now: new Date('2026-11-21T00:00:00Z'),
+    provider: { ask: async (p) => { nPrompt = p; return { by: 'test', text: JSON.stringify({ forage: { diagnosis: 'It walks past cows.', corrections: [{ id: 1, should: 'hunt', why: 'a cow was right there' }, { id: 2, should: 'dance', why: 'not an act' }] }, wander: { diagnosis: 'Fine.', corrections: [] } }) }; } },
+    fitLayer: (layer, ticks, opts) => { nFits.push({ layer, extra: opts.extra.length }); return { layer, passed: false, reason: 'test' }; },
+    save: () => 7,
+  });
+  const nCorr = readCorrections(nDir);
+  dreamCheck(nSummary.reviewed && /## forage/.test(nPrompt) && /walked past|went hungry later/.test(nPrompt) && !/gate/i.test(nPrompt.replace('Whether a retrained layer is kept is decided by how the creature actually fares, not by you.', '')),
+    'at night Opus is shown each layer\'s moments that matter (incl. food walked past before going hungry)');
+  dreamCheck(nCorr.length === 1 && nCorr[0].layer === 'forage' && nCorr[0].should === 'hunt' && nCorr[0].x.length === feat.FEATURES.length,
+    'Opus\'s corrections are kept as training examples (an act that isn\'t one of the layer\'s is dropped)');
+  dreamCheck(nFits.length === 2 && nFits.find((f) => f.layer === 'forage').extra === 1, 'every night each layer is refitted with all corrections so far, then gated');
+  const nLab = path.join(nVault, 'Lab', 'Night Reviews.md');
+  dreamCheck(fs.existsSync(nLab) && /It walks past cows/.test(fs.readFileSync(nLab, 'utf8')), 'the review is written to the vault\'s Lab/Night Reviews for people to read');
+  const nQuiet = await nightlyLearning({ ticks: nTicks.slice(0, 50), since: null, dir: nDir, provider: { ask: async () => { throw new Error('should not be asked'); } },
+    fitLayer: (layer) => ({ layer, passed: false }), save: () => null });
+  dreamCheck(!nQuiet.reviewed && !nQuiet.error, 'too little new to review: no Opus call, the layers are still refitted');
+  const nZombie = [sTk(0, { near: [{ name: 'cow', d: 6 }], hostiles: [{ name: 'zombie', d: 7 }], action: { type: 'flee', layer: 'survive', voices: ['survive', 'wander'] } })];
+  for (let i = 1; i < 300; i++) nZombie.push(sTk(i, { food: i > 250 ? 4 : 14 }));
+  dreamCheck(missedFood(nZombie, 0) === null, 'staying quiet beside a cow while fleeing a zombie is not counted as a missed meal');
+  const { fitLayer: realFit } = require('./tools/trainLayers');
+  const fTicks = [];
+  for (let d = 0; d < 3; d++) for (let i = 0; i < 320; i++) {
+    const k = d * 320 + i;
+    fTicks.push({ ...sTk(k, { tod: (i * 75) % 24000, action: { type: k % 7 ? 'explore' : 'swingAt', layer: k % 7 ? 'wander' : 'forage', voices: ['wander'] }, foodCarried: k % 7 === 1 ? 3 : 0 }) });
+  }
+  const fHeldStart = fTicks[640].ts;
+  const fExtra = [{ x: feat.FEATURES.map(() => 0), y: 'hunt', ts: fTicks[10].ts, actual: 'none', weight: 2 }, { x: feat.FEATURES.map(() => 0), y: 'hunt', ts: fHeldStart, actual: 'none', weight: 2 }];
+  const fRes = realFit('forage', fTicks, { extra: fExtra });
+  dreamCheck(fRes.corrections === 1, 'a correction from the held-out day is never trained on that night (the gate stays the bot\'s own)');
+
+  // ---- Route A: Opus edits weights directly (stage 5b)
+  const edt = require('./learn/edit');
+  const eBase = { classes: MENUS_F(), features: feat.FEATURES, W: MENUS_F().map(() => feat.FEATURES.map(() => 0)), b: [0, 0, 0, -1, 0, 1] };
+  function MENUS_F() { return ['eat', 'pickup', 'harvest', 'hunt', 'seekFood', 'none']; }
+  const eClean = edt.cleanEdits('forage', eBase, [{ act: 'hunt', feature: 'animalClose', to: 4, why: 'cows' }, { act: 'dance', feature: 'animalClose', to: 1 }, { act: 'hunt', feature: 'wings', to: 1 }, { act: 'hunt', feature: 'bias', to: 99 }]);
+  dreamCheck(eClean.length === 2 && eClean[0].from === 0 && eClean[1].to === 10, 'edits must name a real act and feature; numbers are kept within +-10');
+  const eEdited = edt.applyEdits(eBase, [eClean[0]]);
+  const eCowX = feat.vector({ ...sRec, near: [{ name: 'cow', d: 2 }] });
+  dreamCheck(smx.predict(eBase, eCowX).pick === 'none' && smx.predict(eEdited, eCowX).pick === 'hunt' && eEdited.classes.join() === eBase.classes.join(),
+    'an edit is applied straight to the weights: no training, and the layer now hunts the cow');
+  const eTicks = [];
+  for (let i = 0; i < 60; i++) eTicks.push(sTk(i, { near: i % 3 === 0 ? [{ name: 'cow', d: 3 }] : [], action: { type: 'explore', layer: 'wander', voices: ['wander'] } }));
+  const eEv = await edt.evidenceFor(eClean[0], eBase, eTicks, ['a cow was right there'], {});
+  dreamCheck(eEv.changed === 20 && eEv.evidence.length === 8 && /would choose hunt instead of none/.test(eEv.evidence[0]),
+    'each edit is checked against every past moment it would change (found by arithmetic), the most relevant shown with how it turned out');
+  const eCalls = [];
+  const eProvider = { ask: async (p) => { eCalls.push(p); return { by: 'test', text: eCalls.length === 1
+    ? JSON.stringify({ edits: [{ act: 'hunt', feature: 'animalClose', to: 4, why: 'cows were close', moments: [1] }, { act: 'none', feature: 'bias', to: -5, why: 'speak more', moments: [1] }] })
+    : JSON.stringify({ final: [{ act: 'hunt', feature: 'animalClose', to: 3, why: 'softened after the evidence' }] }) }; } };
+  let eGated = null;
+  const eRes = await edt.editLayer({ layer: 'forage', base: { model: eBase, version: 4 }, ticks: nTicks, day: nTicks, provider: eProvider, dir: nDir,
+    gate: (layer, model, result) => { eGated = model; result.passed = false; result.reason = 'test gate'; result.model = model; return result; }, now: new Date('2026-11-22T00:00:00Z') });
+  dreamCheck(eCalls.length === 2 && /FULL weight table/.test(eCalls[0]) && /past moments/.test(eCalls[1]) && eRes.proposed.length === 2 && eRes.edits.length === 1 && eRes.edits[0].to === 3,
+    'Opus sees the full table, proposes, reads the evidence, then keeps, adjusts or withdraws (here: one softened, one withdrawn)');
+  dreamCheck(!!eGated && smx.toTable(eGated).hunt.animalClose === 3 && smx.toTable(eGated).none.bias === 1 && eRes.base === 4,
+    'only the kept edits reach the layer, and it still has to pass the gate');
+  const eLabVault = fs.mkdtempSync(path.join(os.tmpdir(), 'minecraft-mind-lab-'));
+  let eRoutes = 0;
+  const eNight = await nightlyLearning({ ticks: nTicks, since: null, dir: nDir, vaultPath: eLabVault, route: 'edit', provider: (() => { let k = 0; return { ask: async () => ({ by: 'test', text: (k++ % 2 === 0) ? JSON.stringify({ edits: [{ act: 'hunt', feature: 'animalClose', to: 2, why: 'w', moments: [1] }] }) : JSON.stringify({ final: [{ act: 'hunt', feature: 'animalClose', to: 2, why: 'kept' }] }) }) }; })(),
+    learned: () => ({ forage: { model: eBase, version: 4 } }), gate: (l, m, r) => { r.model = m; r.passed = false; r.reason = 'test'; return r; },
+    fitLayer: (layer) => { eRoutes += 1; return { layer, passed: false, reason: 'trained' }; }, save: () => 9, now: new Date('2026-11-22T00:00:00Z') });
+  dreamCheck(eNight.route === 'edit' && eNight.results.find((r) => r.layer === 'forage').route === 'edit' && eNight.results.find((r) => r.layer === 'wander').route === 'train' && eRoutes === 1,
+    'on an editing night a layer with a model is edited; one without a model yet is trained instead');
+  dreamCheck(/kept after seeing the evidence/.test(fs.readFileSync(path.join(eLabVault, 'Lab', 'Night Reviews.md'), 'utf8')), 'the edits and their reasons are written to Lab/Night Reviews');
 
   // ---- Weighted memory and forgetting (docs/design-subsumption.md, stage 2)
   console.log('\n=== Weighted memory ===');

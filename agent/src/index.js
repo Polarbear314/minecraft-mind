@@ -128,6 +128,41 @@ const alwaysOn = claudeMode && !layersMode && localMind ? [
 // enough new experiences have piled up. Runs on whichever mind the brain map
 // says — Claude when awake, the local model when Claude is resting.
 const dreamProvider = claudeMode ? regionProvider(brain, 'hippocampus', { timeoutMs: 90000 }) : null;
+// Stage 5 (MIND=layers): every sleep, Opus reviews each learned layer's day,
+// then the layers are retrained and gated (learn/nightly.js). The time of the
+// last review survives restarts (logs/layers/last-review.json).
+const nightly = layersMode && dreamProvider && config.learnedLayers !== 'off' ? (() => {
+  const { nightlyLearning } = require('./learn/nightly');
+  const trainer = require('./tools/trainLayers');
+  const { readTicks } = require('./tools/days');
+  const fs = require('fs');
+  const lastFile = path.join(trainer.DIR, 'last-review.json');
+  // Stage 5b: route B (Opus's corrections + retraining) and route A (Opus
+  // edits the weights directly) alternate, night by night.
+  const { ollamaEmbedder } = require('./vault/memory');
+  const embed = (process.env.EMBED_MODEL || '').trim() ? ollamaEmbedder({ model: process.env.EMBED_MODEL.trim() }) : null;
+  const gate = (layer, model, result) => {
+    const { held } = trainer.splitExamples(layer, readTicks().filter((t) => t.action && t.action.layer));
+    if (held.length < trainer.MIN_HELD) { result.reason = `not enough held-out examples to test on (${held.length})`; return result; }
+    return trainer.gateModel(layer, held, model, result);
+  };
+  return async () => {
+    let last = {};
+    try { last = JSON.parse(fs.readFileSync(lastFile, 'utf8')); } catch (_) { /* first night */ }
+    const since = last.ts ? new Date(last.ts) : null;
+    const nights = Number(last.nights) || 0;
+    const route = nights % 2 === 1 ? 'edit' : 'train';
+    const now = new Date();
+    const summary = await nightlyLearning({
+      ticks: readTicks().filter((t) => t.action && t.action.layer), since, provider: dreamProvider, dir: trainer.DIR,
+      vaultPath: config.vaultPath, fitLayer: trainer.fitLayer, save: trainer.save, gate, route, embed,
+      learned: layerStack ? learnedLoader(trainer.DIR) : () => ({}), now,
+    });
+    fs.mkdirSync(trainer.DIR, { recursive: true });
+    if (summary.reviewed || !since) fs.writeFileSync(lastFile, JSON.stringify({ ts: now.toISOString(), nights: summary.reviewed ? nights + 1 : nights }));
+    return summary;
+  };
+})() : null;
 const dreamer = dreamProvider
   ? createDreamer({
     vaultPath: config.vaultPath,
@@ -135,10 +170,18 @@ const dreamer = dreamProvider
     intervalMs: config.dreamIntervalMs,
     minNewExperiences: brain.hippocampus.minNewExperiences || 0,
     logDir: config.decisionLogDir,
+    nightly,
     onSleep: (s) => {
-      blackboard.fire('hippocampus', `slept: replayed ${s.replayed} links, ${s.links} kept, ${s.pruned} faded`);
-      console.log(`[sleep] replayed ${s.replayed} links, kept ${s.links}, ${s.pruned} faded${s.prunedLinks.length ? ` (e.g. ${s.prunedLinks.slice(0, 3).join('; ')})` : ''}`);
+      if (s.replayed != null) {
+        blackboard.fire('hippocampus', `slept: replayed ${s.replayed} links, ${s.links} kept, ${s.pruned} faded`);
+        console.log(`[sleep] replayed ${s.replayed} links, kept ${s.links}, ${s.pruned} faded${s.prunedLinks.length ? ` (e.g. ${s.prunedLinks.slice(0, 3).join('; ')})` : ''}`);
+      }
       if (s.memory) console.log(`[sleep] memory: ${s.memory.live} live Experiences, ${s.memory.archived} folded into gists and archived${s.memory.gists.length ? ` (${s.memory.gists.slice(0, 4).join('; ')})` : ''}`);
+      if (s.learning) {
+        const L = s.learning;
+        console.log(`[sleep] learning (route ${L.route === 'edit' ? 'A: Opus edits weights' : 'B: retraining'}): ${L.error ? `failed (${L.error})` : `${L.reviewed ? `Opus reviewed ${L.reviewedTicks} ticks (${Object.entries(L.corrections || {}).map(([k, v]) => `${k} ${v} corrections`).join(', ')})` : 'no review'}; ${(L.results || []).map((r) => `${r.layer} ${r.passed ? `v${r.version} SERVED` : 'not served'}`).join(', ')}`}`);
+        blackboard.fire('hippocampus', `learned: ${(L.results || []).map((r) => `${r.layer} ${r.passed ? 'served' : 'kept hand-written'}`).join(', ')}`);
+      }
     },
     onDream: ({ by, written }) => blackboard.fire('hippocampus',
       `dreamed (${by}): ${written.map((w) => w.title).join('; ') || 'nothing new'}`),

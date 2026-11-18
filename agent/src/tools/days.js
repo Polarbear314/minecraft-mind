@@ -8,6 +8,7 @@
 // game clock wraps (dawn) or where the bot was off for more than 10 minutes.
 // Writes logs/days.json and docs/results-days.md (a table, plus a row of
 // sparklines for the measures that should change as the layers learn).
+require('dotenv').config({ path: require('path').resolve(__dirname, '..', '..', '.env') });
 const fs = require('fs');
 const path = require('path');
 
@@ -139,6 +140,8 @@ function main() {
     '',
   ].join('\n');
   fs.writeFileSync(path.join(ROOT, 'docs', 'results-days.md'), md);
+  // The same, in the vault's Lab/ folder (for reading in Obsidian; MindBot never reads it).
+  try { require('../vault/labNotes').writeLab((process.env.VAULT_PATH || '').trim(), 'Days', md); } catch (_) { /* no vault: docs/ has it */ }
 
   console.log(`${days.length} days (${full.length} full). Wrote logs/days.json and docs/results-days.md\n`);
   console.log(head.slice(0, 15).map((h) => h.slice(0, 9).padEnd(9)).join(' '));

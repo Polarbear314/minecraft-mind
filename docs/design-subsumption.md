@@ -40,6 +40,32 @@
 - *First fit:* Forage v2 learned its own examples well (75–100% per act) but did not pass: the held-out day was the first after the food fixes, where the hand-written Forage made no mistakes the labels can see, and crops and picking up food barely appear in earlier days. Wander had too few examples. **It needs several more days of the fixed bot.** Running in shadow meanwhile.
 - `npm run sim`: 298 checks (10 new). Training is by hand for now; doing it every night is stage 5.
 
+**Stage 5 built (2026-11-17): nightly learning.** `agent/src/learn/nightly.js`, run at every sleep in `MIND=layers` (after link consolidation and forgetting, before the dream; `reflection/dream.js`):
+1. *Replay:* the ticks since the last review (`logs/layers/last-review.json` survives restarts).
+2. *Opus reviews each learned layer:* shown its current weights and the moments that matter for it, chosen the FreeLAB way (its acts that went badly, food it walked past before going hungry with no hostile near, hungry stretches, a few that went well; at most 24), it writes a diagnosis and corrections ("at #3 Forage should have hunted"). It is told its corrections become training data and that it doesn't decide what's kept.
+3. *Train:* each layer is refitted on its own outcomes plus every correction so far (counted double), never corrections from the held-out day.
+4. *Gate:* as in stage 4, by the bot's own outcomes.
+- Corrections: `logs/layers/corrections-*.jsonl`; reviews: `logs/layers/reviews-*.jsonl` and the vault's `Lab/Night Reviews.md`. The `[sleep] learning:` log line and the brain view's hippocampus report each night.
+- *First real review* (Opus, 32 s, about 4,000 ticks): 3 Forage and 8 Wander corrections. Its diagnosis caught a real gap in the hand-written layers: **with health at 2–4 and carrots in its pack, the bot doesn't eat to heal**, because eating waits for hunger, while health only comes back with the food bar high. Retrained with the corrections, neither layer passes the gate yet (Forage 0.63 vs 1.0, Wander 0.49 vs 0.67): too few good days so far.
+- Not yet: Opus adjusting note weights (stage 2's memory), and route A (editing weights directly, stage 5b).
+
+**Lab notes (2026-11-17).** `npm run days`, `npm run train-layers` and the nightly reviews also write to the vault's `Lab/` folder (`Days`, `Learned Layers`, `Night Reviews`), for reading in Obsidian. MindBot never reads `Lab/` (`agent/src/vault/labNotes.js`).
+
+**Bread (2026-11-17).** Carrying 3+ wheat, Make now works toward bread (planks, a crafting table, setting it down, baking) before its running plan, which pauses meanwhile. It still needs wood for the table.
+
+**Stage 5b built (2026-11-17): Opus edits weights directly (route A).** `agent/src/learn/edit.js`, alternating nightly with route B (corrections + retraining; `logs/layers/last-review.json` counts nights).
+1. *Propose:* Opus reads a learned layer's **full** weight table (about 120 named numbers) and today's moments, and proposes up to 6 edits, each one number with a reason and the moments behind it.
+2. *Check, the FreeLAB way:* for each edit, every past tick where the layer would now choose differently is found by arithmetic; the most recent 300 are ranked by similarity to the moments behind the edit (`nomic-embed-text` embeddings, cached in `logs/layers/moment-embeddings.json`) × recency; Opus reads the top 8 with how each turned out.
+3. *Revise:* Opus keeps, adjusts or withdraws each edit.
+4. *Gate:* as for a retrained layer. Logged to `logs/layers/edits-*.jsonl` and `Lab/Night Reviews.md`.
+- *First real editing night:* Opus proposed 6 Forage edits and **withdrew** the one that would have changed 282 past moments; proposed 4 Wander edits and **softened** one ("carrying food → fiddle" from −2.2 to −1.5) after seeing it would change 1,022, because "the body nearly always carries some food". Neither edited layer passed the gate yet (Forage 0.50 vs 0.79).
+- *Embeddings:* `nomic-embed-text` pulled (274 MB) and `EMBED_MODEL=nomic-embed-text` set in `agent/.env`; `vault/memory.js` retrieval now uses embeddings ("hostile at nightfall and I am out in the open" finds *Died In The Night Under Cover* without shared words). Familiarity alone now gives a Concept at most 0.6 weight, so Pig and Cow no longer outrank fitting memories.
+- `npm run sim`: 314 checks.
+
+**Eat to heal (2026-11-17, the gap Opus found).** Survive now eats when health is at 10 or below, the food bar is under 18 (where health starts coming back), and food is carried, whatever the hunger drive says. Live, right after the restart: three potatoes eaten in a row at low health.
+
+`npm run sim`: 307 checks.
+
 **Stage 3 built (2026-11-17).** `npm run days` (`agent/src/tools/days.js`) cuts the whole tick log into Minecraft days (at dawn, or where the bot was off for 10+ minutes) and measures each: distance, area, deaths, ticks hurt, average food, starving ticks, ate, hunted, harvested, broke, made, share of the night enclosed, and the share of ticks each layer was in control. Writes `logs/days.json` and `docs/results-days.md` (a table and sparkline trends). First run: 38 days of MindBot's life (30 full), the first 35 in the region design. `npm run sim`: 284 checks.
 
 ## What changed since the first draft
@@ -166,6 +192,21 @@ The 3B and 4B layers learn by retraining first. Editing them directly is unprove
 The same gate protects the bot. Each upper layer then has three kinds of nights: retraining, steering/belief edits, and free-form edits.
 
 **Expectations:** steering will probably work, belief edits might, free-form might not at all. Each outcome is a finding about how far the idea reaches. And it sharpens the philosophy question: steering adjusts the bot's temperament; free-form editing rewrites its mind.
+
+#### The model's insides as a document (FreeLAB applied to weight editing)
+
+*Design, 2026-11-17; built when the 3B/4B layers exist (stage 6).* The small layers' weights fit in a prompt; a 3B model's don't, and they mean nothing read raw. FreeLAB's answer to a document too big to read is to index it once and send the reader only the chunks that answer the question. So: treat the model's insides as the document.
+
+1. **Chunks = units of the model, described by what activates them.** Once per model version, run the layer over a few thousand of MindBot's own logged situations (the tick texts, `learn/nightly.js describe()`). For each candidate unit, a direction in one layer's activations (from a sparse autoencoder, or simpler: MLP neurons and the top principal directions of each layer), keep the situations that activate it most and write a one-line description: "fires on: lava ahead, a drop, the edge of the world". Opus or the local model can write the descriptions from the examples (automated interpretability).
+2. **Index them once with nomic-embed-text**, cached per model version in `logs/layers/<layer>-units-v<N>.json`, the way FreeLAB embeds a document once at upload.
+3. **Ask a question; retrieve the units.** Opus's night review names a lesson ("Shelter keeps placing blocks with nothing to lean on"). The question goes to the index; retrieval returns the 20 or so units that match, ranked by similarity × how strongly they drive the layer's choice of act (their effect on the act's output when nudged).
+4. **Opus reads only those** (descriptions, top examples, effect on each act) and proposes edits, using the tools above: steer along a unit's direction (most reliable), a ROME/MEMIT edit at the layer that holds it, or a free-form change to that unit's weights.
+5. **Check, the 5b way:** before anything is kept, retrieval finds past moments where the edited model would choose differently, Opus reads the most relevant, keeps, adjusts or withdraws.
+6. **Gate:** served only if the bot does better with it on the held-out day; every version kept.
+
+What this needs: the 3B/4B layers (stage 6) served through something that exposes activations (Hugging Face transformers on the 3060, not Ollama, which doesn't), a sparse autoencoder or PCA per layer (minutes to fit on a few thousand situations), and the existing pieces: `vault/memory.js` embeddings, `learn/edit.js` evidence and revise steps, `tools/trainLayers.js` gate.
+
+Why it matters for the project: it turns "Opus can't read a 3-billion-parameter model" into "Opus reads the 20 units that matter for this lesson", which is a plausible account of how weight-space programming at the MIT scale could work, and it makes FreeLAB's retrieval the lens through which one mind edits another.
 
 ## Measuring: patterns across days
 

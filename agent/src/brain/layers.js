@@ -32,6 +32,7 @@ const { predict } = require('../learn/softmax');
 
 const HUNGER_URGENT = 75;
 const HEALTH_SAFE = 10;
+const HEAL_FOOD = 18; // the food bar must be at least this for health to come back
 const AVOID_RANGE = 5;
 const EXPERIMENT_CHANCE = 0.15; // Wander's salt: fiddle instead of walking on
 const TASTE_CHANCE = 0.25; // Forage's salt: starving, try something carried
@@ -46,6 +47,7 @@ const MAKE_COOLDOWN_MS = 30000;
 const CROP_REACH = 16;
 const STOCK = 4; // carrying fewer bites than this, Forage goes for food in reach even when not hungry
 const BREAD_WHEAT = 3;
+const BREAD_COOLDOWN_MS = 4000; // the steps to bread (planks, table, set it down, bake) follow quickly
 
 const ORDER = ['survive', 'make', 'shelter', 'gather', 'forage', 'wander']; // who wins, first to last
 const RANK = { survive: 0, wander: 1, forage: 2, gather: 3, shelter: 4, make: 5 };
@@ -94,6 +96,13 @@ function createLayerStack({
     if ((drives.hunger > HUNGER_URGENT || (lowHealth && drives.hunger > HUNGER_THRESHOLD)) && (o.inventoryFood || []).length) {
       return { type: 'eat', item: o.inventoryFood[0].name };
     }
+    // Eat to heal: health only comes back while the food bar is nearly full,
+    // so badly hurt with food in the pack, eat whatever the hunger drive says
+    // (2026-11-17, found by Opus's first night review: it sat at 2-4 health
+    // for a whole day carrying carrots).
+    if (lowHealth && o.food != null && o.food < HEAL_FOOD && (o.inventoryFood || []).length) {
+      return { type: 'eat', item: o.inventoryFood[0].name, reason: 'to heal' };
+    }
     return null;
   }
 
@@ -103,29 +112,41 @@ function createLayerStack({
   }
 
   // ------------------------------------------------------------ 5 Make
-  function make(drives, o, rx, { inhibited }) {
-    if (planRunner) {
-      const step = planRunner.next(o, { emergency: inhibited });
-      if (step) return step;
-    }
-    if (inhibited || hostileWithin(o, GATHER_SAFE)) return null;
-    if (now() - lastMade < MAKE_COOLDOWN_MS) return null;
+  /** What Make would make now: { act, bread } or null. bread = part of turning wheat into bread. */
+  function makingNow(o) {
     const log = (o.inventory || []).find((i) => isLog(i.name));
     const planks = count(o, isPlanks);
     const planksFrom = (l) => l.name.replace(/^stripped_/, '').replace(/_(log|stem)$/, '_planks'); // stripped_oak_log -> oak_planks
     const hasTable = count(o, (n) => n === 'crafting_table') > 0;
-    let want = null;
     if (count(o, (n) => n === 'wheat') >= BREAD_WHEAT) {
       // Bread needs a crafting table within reach: use one, set one down, or make one.
-      if (o.tableNear) want = 'bread';
-      else if (hasTable) { lastMade = now(); return { type: 'place', at: 'ahead', item: 'crafting_table' }; }
-      else if (planks >= 4) want = 'crafting_table';
-      else if (log) want = planksFrom(log);
-    } else if (log && planks < 8) want = planksFrom(log);
-    else if (planks >= 4 && !hasTable) want = 'crafting_table';
-    if (!want) return null;
+      if (o.tableNear) return { act: { type: 'craft', item: 'bread' }, bread: true };
+      if (hasTable) return { act: { type: 'place', at: 'ahead', item: 'crafting_table' }, bread: true };
+      if (planks >= 4) return { act: { type: 'craft', item: 'crafting_table' }, bread: true };
+      if (log) return { act: { type: 'craft', item: planksFrom(log) }, bread: true };
+    }
+    if (log && planks < 8) return { act: { type: 'craft', item: planksFrom(log) }, bread: false };
+    if (planks >= 4 && !hasTable) return { act: { type: 'craft', item: 'crafting_table' }, bread: false };
+    return null;
+  }
+
+  function make(drives, o, rx, { inhibited }) {
+    const free = !inhibited && !hostileWithin(o, GATHER_SAFE);
+    // Bread comes before a running plan (2026-11-17: it carried 7 wheat for a
+    // whole day while a plan kept Make busy). The plan pauses meanwhile.
+    const m = free ? makingNow(o) : null;
+    if (m && m.bread && now() - lastMade >= BREAD_COOLDOWN_MS) {
+      if (planRunner) planRunner.next(o, { emergency: true });
+      lastMade = now();
+      return m.act;
+    }
+    if (planRunner) {
+      const step = planRunner.next(o, { emergency: inhibited });
+      if (step) return step;
+    }
+    if (!m || now() - lastMade < MAKE_COOLDOWN_MS) return null;
     lastMade = now();
-    return { type: 'craft', item: want };
+    return m.act;
   }
 
   // ------------------------------------------------------------ 3 Gather

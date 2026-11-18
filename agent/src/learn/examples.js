@@ -92,6 +92,22 @@ function wentHungryLater(ticks, i) {
 }
 
 /**
+ * Forage missed food at tick i: it was silent by day, food was in reach, no
+ * hostile was close and Survive/Shelter didn't have the body (being quiet while
+ * fleeing a zombie isn't a missed meal), and the body went hungry later.
+ * Returns the act that would have taken the food, or null.
+ */
+function missedFood(ticks, i) {
+  const t = ticks[i];
+  const a = t.action || {};
+  if (!a.layer || (a.voices || []).includes('forage') || t.isDay === false) return null;
+  if (a.layer === 'survive' || a.layer === 'shelter') return null;
+  if ((t.hostiles || []).some((h) => h.d != null && h.d <= 10)) return null;
+  const could = foodInReach(t);
+  return could && wentHungryLater(ticks, i) ? could : null;
+}
+
+/**
  * Examples for a layer from ticks (sorted, layers mode only).
  * Returns [{ x, y, ts, actual }] where actual = what the hand-written layer did
  * (its class, or 'none' if it was silent), for comparing against it.
@@ -111,9 +127,9 @@ function buildExamples(layer, ticks) {
       if (o === 'good') out.push({ x: vector(t), y: cls, ts: t.ts, actual: cls });
       else if (o === 'bad') out.push({ x: vector(t), y: 'none', ts: t.ts, actual: cls });
     } else if (!voices.includes(layer)) {
-      if (layer === 'forage' && !(t.isDay === false)) {
-        const could = foodInReach(t);
-        if (could && wentHungryLater(ticks, i)) { out.push({ x: vector(t), y: could, ts: t.ts, actual: 'none', delayed: true }); continue; }
+      if (layer === 'forage') {
+        const could = missedFood(ticks, i);
+        if (could) { out.push({ x: vector(t), y: could, ts: t.ts, actual: 'none', delayed: true }); continue; }
       }
       if (quiet++ % QUIET_SAMPLE) continue;
       const o = outcome(layer, ticks, i);
@@ -123,4 +139,4 @@ function buildExamples(layer, ticks) {
   return out;
 }
 
-module.exports = { MENUS, buildExamples, outcome, actClass, foodInReach, wentHungryLater };
+module.exports = { MENUS, buildExamples, outcome, actClass, foodInReach, wentHungryLater, missedFood };

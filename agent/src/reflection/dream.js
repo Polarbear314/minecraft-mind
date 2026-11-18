@@ -403,7 +403,7 @@ function proposedCount(parsed) {
  *   neither       — `claude -p --model <model>` like the decision layer.
  * opts.logDir: write logs/dreams-YYYY-MM-DD.jsonl (prompt, reply, outcome).
  */
-function createDreamer({ vaultPath, model, intervalMs = 0, ask, provider, minNewExperiences = 0, logDir = null, onDream = null, onSleep = null }) {
+function createDreamer({ vaultPath, model, intervalMs = 0, ask, provider, minNewExperiences = 0, logDir = null, onDream = null, onSleep = null, nightly = null }) {
   const think = provider
     ? (prompt) => provider.ask(prompt, { schema: DREAM_SCHEMA })
     : async (prompt) => ({
@@ -432,8 +432,13 @@ function createDreamer({ vaultPath, model, intervalMs = 0, ask, provider, minNew
       // move to Archive/ (vault/memory.js).
       try { sleep.memory = memory.forget(vaultPath, { replay, now: new Date() }); } catch (_) { /* keep every memory tonight */ }
       lastSlept = startedAt;
-      if (onSleep) onSleep(sleep);
     } catch (_) { /* a bad night's sleep must not stop the dream */ }
+    // Nightly learning (stage 5, MIND=layers): Opus reviews each learned
+    // layer's day, the layers are retrained and gated (learn/nightly.js).
+    if (nightly) {
+      try { (sleep || (sleep = {})).learning = await nightly(); } catch (err) { (sleep || (sleep = {})).learning = { error: err.message }; }
+    }
+    try { if (onSleep && sleep) onSleep(sleep); } catch (_) { /* logging only */ }
     const prompt = buildDreamPrompt(vaultPath);
     let reply = null;
     try {
