@@ -420,7 +420,7 @@ function createDreamer({ vaultPath, model, intervalMs = 0, ask, provider, minNew
     if (logDir) appendJsonLine(logDir, 'dreams', entry);
   }
 
-  async function dream(reason) {
+  async function dream(reason, { dreamToo = true } = {}) {
     const startedAt = Date.now();
     // Sleep first: replay what mattered, weaken everything a little, let
     // unused links fade (vault/plasticity.js). Then dream over the result.
@@ -439,6 +439,10 @@ function createDreamer({ vaultPath, model, intervalMs = 0, ask, provider, minNew
       try { (sleep || (sleep = {})).learning = await nightly(); } catch (err) { (sleep || (sleep = {})).learning = { error: err.message }; }
     }
     try { if (onSleep && sleep) onSleep(sleep); } catch (_) { /* logging only */ }
+    if (!dreamToo) { // slept and learned; too little new for a dream tonight
+      log({ ts: new Date(startedAt).toISOString(), reason, outcome: 'slept', sleep, latencyMs: Date.now() - startedAt });
+      return [];
+    }
     const prompt = buildDreamPrompt(vaultPath);
     let reply = null;
     try {
@@ -477,11 +481,21 @@ function createDreamer({ vaultPath, model, intervalMs = 0, ask, provider, minNew
       if (busy) return;
       const due = intervalMs > 0 && Date.now() - lastDream >= intervalMs;
       if (!dayBreak && !due) return;
-      if (minNewExperiences > 0 &&
-          experienceTitles(vaultPath).length - experiencesAtLastDream < minNewExperiences) return;
+      const fresh = experienceTitles(vaultPath).length - experiencesAtLastDream;
+      const enough = !(minNewExperiences > 0 && fresh < minNewExperiences);
+      // With nightly learning (MIND=layers), every dawn is a night's sleep:
+      // consolidation, forgetting and learning run even when too little is new
+      // for a dream (2026-11-17: a life going well wrote 7 memories in a day,
+      // so it never dreamed, and so never learned).
+      if (!enough && !(nightly && dayBreak)) return;
       busy = true;
       lastDream = Date.now();
-      dream(dayBreak ? 'day-break' : 'interval')
+      dream(dayBreak ? 'day-break' : 'interval', { dreamToo: enough })
+        .then(() => {
+          // Forgetting moves old memories to Archive/: keep counting only the
+          // new ones (fresh memories are never archived the night they're made).
+          if (!enough) experiencesAtLastDream = experienceTitles(vaultPath).length - fresh;
+        })
         .catch(() => {}) // silent: a failed dream leaves no trace
         .finally(() => { busy = false; });
     },

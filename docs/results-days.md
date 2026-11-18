@@ -1,61 +1,28 @@
 # Patterns across days
 
-*Written by `npm run days` on 2026-11-17 23:54 UTC from `logs/ticks-*.jsonl`. One row per Minecraft day of MindBot's life; * = partial day (the bot was started, stopped or restarted). "Mind" is regions (Claude by day) or layers (the behaviour stack). Area = 8×8-block cells visited. Hurt = ticks it took damage. Starving = ticks with food at 3 or less. Most in control = share of ticks each layer had the body.*
+*Written by `npm run days` on 2026-11-18 01:20 UTC from `logs/ticks-*.jsonl`. One row per Minecraft day of MindBot's life; * = partial day (the bot was started, stopped or restarted). "Mind" is regions (Claude by day) or layers (the behaviour stack). Area = 8×8-block cells visited. Hurt = ticks it took damage. Starving = ticks with food at 3 or less. Most in control = share of ticks each layer had the body.*
 
 | Day | Mind | Ticks | Walked | Area | Deaths | Hurt | Avg food | Starving | Ate | Hunted | Harvested | Broke | Made | Night enclosed % | Most in control |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | regions | 709 | 3979 | 183 | 3 | 28 | 8.2 | 283 | 0 | 0 | 0 | 0 | 0 | 0 | — |
-| 2 | regions | 783 | 3124 | 158 | 2 | 15 | 9.2 | 280 | 4 | 11 | 0 | 0 | 0 | 0 | — |
-| 3 | regions | 682 | 2077 | 135 | 3 | 14 | 5.6 | 432 | 0 | 0 | 0 | 0 | 0 | 0 | — |
-| 4 | regions | 742 | 2020 | 112 | 3 | 21 | 14.1 | 84 | 2 | 0 | 0 | 0 | 0 | 0 | — |
-| 5 | regions | 755 | 1917 | 123 | 2 | 32 | 6.4 | 421 | 0 | 0 | 0 | 0 | 0 | 0 | — |
-| 6 | regions | 647 | 1591 | 77 | 2 | 18 | 7.7 | 304 | 0 | 1 | 0 | 0 | 0 | 0 | — |
-| 7 | regions | 602 | 2348 | 125 | 4 | 31 | 6.1 | 364 | 0 | 0 | 0 | 0 | 0 | 0 | — |
-| 8 | regions | 776 | 1952 | 116 | 2 | 34 | 14.3 | 58 | 3 | 0 | 0 | 0 | 0 | 0 | — |
-| 9 | regions | 780 | 2881 | 145 | 1 | 21 | 6.4 | 458 | 0 | 0 | 0 | 0 | 0 | 0 | — |
-| 10* | regions | 101 | 69 | 10 | 0 | 2 | 12.8 | 0 | 0 | 0 | 0 | 0 | 0 | — | — |
-| 11* | regions | 255 | 0 | 1 | 0 | 0 | 11 | 0 | 0 | 0 | 0 | 0 | 0 | 98 | — |
-| 12 | regions | 784 | 613 | 39 | 3 | 17 | 10.4 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | — |
-| 13 | regions | 785 | 1111 | 49 | 0 | 6 | 4.4 | 535 | 0 | 0 | 0 | 0 | 0 | 100 | — |
-| 14 | regions | 775 | 1544 | 71 | 1 | 9 | 2.8 | 604 | 0 | 0 | 0 | 6 | 0 | 58 | — |
-| 15 | regions | 793 | 543 | 43 | 0 | 0 | 0 | 793 | 0 | 12 | 0 | 3 | 0 | 100 | — |
-| 16 | regions | 762 | 196 | 4 | 0 | 0 | 12.2 | 174 | 7 | 36 | 0 | 3 | 0 | 100 | — |
-| 17 | regions | 772 | 1338 | 104 | 2 | 10 | 16.4 | 30 | 2 | 17 | 0 | 15 | 0 | 0 | — |
-| 18 | regions | 740 | 1433 | 124 | 0 | 10 | 3.4 | 576 | 1 | 9 | 0 | 6 | 0 | 100 | — |
-| 19* | regions | 38 | 0 | 1 | 0 | 0 | 0 | 38 | 0 | 0 | 0 | 0 | 0 | 100 | — |
-| 20 | regions | 784 | 1310 | 88 | 1 | 1 | 11.8 | 25 | 5 | 16 | 0 | 8 | 0 | 100 | — |
-| 21* | regions | 286 | 1151 | 77 | 1 | 17 | 9.1 | 96 | 0 | 0 | 0 | 4 | 0 | — | — |
-| 22* | regions | 302 | 12 | 3 | 0 | 0 | 19.9 | 1 | 0 | 0 | 0 | 7 | 0 | 78 | — |
-| 23 | regions | 740 | 1269 | 97 | 0 | 9 | 3.2 | 551 | 1 | 16 | 0 | 11 | 0 | 100 | — |
-| 24 | regions | 780 | 1354 | 83 | 0 | 1 | 0.6 | 712 | 2 | 12 | 0 | 10 | 0 | 100 | — |
-| 25 | regions | 785 | 1440 | 87 | 0 | 1 | 4.1 | 254 | 6 | 48 | 0 | 7 | 0 | 100 | — |
-| 26 | regions | 795 | 2174 | 96 | 0 | 0 | 0.5 | 739 | 2 | 0 | 0 | 6 | 0 | 100 | — |
-| 27 | regions | 790 | 1492 | 101 | 0 | 1 | 6.2 | 294 | 6 | 26 | 0 | 8 | 0 | 100 | — |
-| 28 | regions | 791 | 1265 | 66 | 0 | 0 | 4 | 478 | 4 | 7 | 0 | 20 | 0 | 100 | — |
-| 29 | regions | 786 | 1461 | 78 | 1 | 7 | 4.4 | 516 | 1 | 12 | 0 | 6 | 0 | 100 | — |
-| 30 | regions | 798 | 1763 | 113 | 0 | 0 | 0 | 798 | 0 | 13 | 0 | 6 | 0 | 100 | — |
-| 31 | regions | 793 | 1409 | 46 | 0 | 0 | 4.7 | 339 | 4 | 14 | 0 | 7 | 0 | 100 | — |
-| 32 | regions | 783 | 1373 | 110 | 2 | 15 | 8 | 268 | 3 | 14 | 0 | 25 | 0 | 53 | — |
-| 33* | regions | 102 | 403 | 36 | 0 | 0 | 11.1 | 0 | 0 | 7 | 0 | 0 | 0 | — | — |
-| 34* | regions | 421 | 644 | 64 | 3 | 20 | 1.9 | 368 | 0 | 0 | 0 | 21 | 0 | 0 | — |
-| 35* | regions | 1 | 0 | 1 | 0 | 0 | 20 | 0 | 0 | 0 | 0 | 0 | 0 | — | — |
-| 36 | layers | 762 | 759 | 64 | 1 | 8 | 18.4 | 22 | 0 | 0 | 0 | 3 | 0 | 100 | shelter 53%, make 35%, survive 12% |
-| 37 | layers | 771 | 1890 | 120 | 0 | 11 | 3 | 565 | 3 | 10 | 0 | 9 | 0 | 100 | shelter 52%, make 29%, forage 17% |
 | 38 | layers | 783 | 2070 | 123 | 0 | 2 | 1.7 | 766 | 2 | 0 | 0 | 3 | 0 | 100 | shelter 50%, forage 49%, survive 1% |
 | 39 | layers | 776 | 1759 | 139 | 0 | 0 | 10.5 | 91 | 8 | 0 | 0 | 20 | 0 | 100 | shelter 51%, wander 27%, forage 13% |
 | 40* | layers | 202 | 176 | 18 | 0 | 1 | 13.7 | 0 | 2 | 0 | 0 | 2 | 0 | — | forage 79%, make 20%, wander 1% |
-| 41* | layers | 561 | 1655 | 134 | 0 | 0 | 12.1 | 0 | 7 | 11 | 6 | 20 | 0 | 100 | shelter 39%, make 30%, wander 28% |
+| 41 | layers | 742 | 1655 | 134 | 0 | 0 | 12.1 | 0 | 7 | 11 | 6 | 20 | 0 | 100 | shelter 54%, make 22%, wander 21% |
+| 42 | layers | 754 | 394 | 35 | 0 | 0 | 12.1 | 0 | 14 | 0 | 5 | 12 | 0 | 100 | shelter 53%, gather 25%, make 15% |
+| 43* | layers | 461 | 1525 | 105 | 0 | 8 | 15.4 | 0 | 12 | 7 | 4 | 19 | 5 | 100 | make 29%, shelter 20%, wander 18% |
+| 44* | layers | 252 | 0 | 1 | 0 | 0 | 17 | 0 | 0 | 0 | 0 | 0 | 0 | 100 | shelter 100% |
+| 45* | layers | 325 | 619 | 53 | 0 | 1 | 16.7 | 0 | 2 | 0 | 2 | 14 | 0 | — | make 76%, wander 18%, gather 4% |
 
-## Trends over full days (31)
+## Trends over full days (4)
 
 | Measure | Day 1 → latest |
 |---|---|
-| distance | `█▆▄▄▄▄▅▄▆▂▃▃▂▁▃▃▃▃▃▃▅▃▃▃▄▃▃▂▄▄▄` |
-| area | `█▇▆▅▆▄▆▅▇▂▃▄▃▁▅▆▄▅▄▄▅▅▃▄▅▃▅▃▆▆▆` |
-| deaths | `▆▅▆▆▅▅█▅▃▆▁▃▁▁▅▁▃▁▁▁▁▁▁▃▁▁▅▃▁▁▁` |
-| avgFood | `▄▅▃▆▃▄▃▆▃▅▃▂▁▆▇▂▅▂▁▃▁▃▃▃▁▃▄█▂▂▅` |
-| starvingTicks | `▃▃▅▂▅▄▄▂▅▁▆▆█▃▁▆▁▆▇▃▇▄▅▆█▄▃▁▆█▂` |
-| ate | `▁▅▁▃▁▁▁▄▁▁▁▁▁▇▃▂▅▂▃▆▃▆▅▂▁▅▄▁▄▃█` |
-| harvested | `▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁` |
-| made | `▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁` |
-| nightEnclosed | `▁▁▁▁▁▁▁▁▁▁█▅██▁███████████▅████` |
+| distance | `█▇▆▁` |
+| area | `▇██▁` |
+| deaths | `▁▁▁▁` |
+| avgFood | `▁▇██` |
+| starvingTicks | `█▂▁▁` |
+| ate | `▁▅▄█` |
+| harvested | `▁▁█▇` |
+| made | `▁▁▁▁` |
+| nightEnclosed | `▁▁▁▁` |

@@ -30,6 +30,27 @@ const JOB = {
   gather: 'I am the part of MindBot that gathers by day: picking up what lies about, breaking wood, keeping enough blocks to build a shelter.',
 };
 const NOTHING = 'nothing: this is not for me right now (let another part of me act)';
+const GATHER_SAFE = 10; // Gather's model is asked only by day with no hostile this close
+const ITEM_RANGE = 8;
+
+/**
+ * Whether Gather's model is asked at all (2026-11-17, docs/results-7b-trial.md).
+ * The 1.7B is good at WHICH thing to gather but not at WHETHER it's safe: on 80
+ * logged situations it gathered at night and near zombies as often as by day,
+ * even when the danger was spelled out. So the "when" is wired, Brooks-style,
+ * as the hand-written Gather has it, and the model only chooses "what".
+ */
+function gatherSafe(o) {
+  if (isEvening(o)) return false;
+  return !(o.nearbyEntities || []).some((e) => e.hostile && (e.distance == null || e.distance < GATHER_SAFE));
+}
+
+/** What lies on the ground in reach, in words (only the menu said so before: 12 -> 21 of 40 right in the trial). */
+function itemsWords(o) {
+  const near = (o.nearbyItems || []).filter((i) => i.distance == null || i.distance <= ITEM_RANGE).slice(0, 3)
+    .map((i) => `${i.name.replace(/_/g, ' ')}${i.distance != null ? ` ${Math.round(i.distance)} blocks away` : ''}`);
+  return near.length ? ` Lying on the ground near me: ${near.join(', ')}.` : '';
+}
 
 const isLog = (n) => /_(log|stem)$/.test(n);
 const count = (o, test) => (o.inventory || []).filter((i) => test(i.name)).reduce((s, i) => s + (i.count || 1), 0);
@@ -50,7 +71,7 @@ function menuFor(layer, o, { planStep = null } = {}) {
     // (2026-11-17: untested, the 3B model chose "stay closed in" at sunny midday).
     if (isEvening(o) || a.enclosed) add('stay', a.enclosed ? 'stay where I am, closed in' : 'stay where I am', { type: 'idle' });
   } else if (layer === 'gather') {
-    const item = (o.nearbyItems || []).find((i) => i.distance == null || i.distance <= 8);
+    const item = (o.nearbyItems || []).find((i) => i.distance == null || i.distance <= ITEM_RANGE);
     if (item) add('pickup', `pick up the ${item.name.replace(/_/g, ' ')} lying nearby`, { type: 'pickup', target: item });
     const log = (o.nearbyBlocks || []).filter((b) => isLog(b.name) && b.position).sort((x, y) => (x.distance || 0) - (y.distance || 0))[0];
     if (log) add('dig log', `break the ${log.name.replace(/_/g, ' ')} ${Math.round(log.distance || 0)} blocks away`, { type: 'dig', target: log });
@@ -85,7 +106,8 @@ function createModelLayers({ endpoint = 'http://127.0.0.1:3010', memory = null, 
     try {
       const menu = menuFor(layer, o, extra);
       if (menu.length < 2) { st.answer = { key: 'nothing', p: 1, act: null, at: now(), menuSize: 1 }; return; }
-      const situation = situationWords(o, drives) + (isEvening(o) ? ' Evening is here or coming.' : '');
+      if (layer === 'gather' && !gatherSafe(o)) { st.answer = { key: 'nothing', p: 1, act: null, at: now(), menuSize: menu.length, gated: true }; return; }
+      const situation = situationWords(o, drives) + (isEvening(o) ? ' Evening is here or coming.' : '') + (layer === 'gather' ? itemsWords(o) : '');
       let memories = [];
       if (memory) {
         try { memories = (await memory.retrieve(situation, { layer, k: MEMORIES })).map((h) => `${h.title}: ${h.text.replace(/\s+/g, ' ').slice(0, 160)}`); } catch (_) { /* none */ }
@@ -140,4 +162,4 @@ function createModelLayers({ endpoint = 'http://127.0.0.1:3010', memory = null, 
   };
 }
 
-module.exports = { createModelLayers, menuFor, JOB, EVERY, NOTHING };
+module.exports = { createModelLayers, menuFor, gatherSafe, itemsWords, JOB, EVERY, NOTHING };

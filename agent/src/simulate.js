@@ -1929,6 +1929,21 @@ async function main() {
   const mDownStack = createLayerStack({ random: () => 0.99, modelLayers: mDown });
   mDownStack(lDrives(), mDusk); await new Promise((r) => setTimeout(r, 20));
   dreamCheck(mDownStack(lDrives(), mDusk).type === 'dig', 'with the model service down, the hand-written layers simply carry on');
+  // Gather's model chooses WHAT, never WHETHER it's safe (docs/results-7b-trial.md).
+  const { gatherSafe } = require('./brain/modelLayers');
+  const gDay = lObs({ nearbyItems: [{ name: 'oak_log', distance: 3.2 }] });
+  const gNight = lObs({ isDay: false, timeOfDay: 18000, nearbyItems: [{ name: 'oak_log', distance: 3.2 }] });
+  const gZombie = lObs({ nearbyItems: [{ name: 'oak_log', distance: 3.2 }], nearbyEntities: [{ name: 'zombie', distance: 6, hostile: true }] });
+  dreamCheck(gatherSafe(gDay) && !gatherSafe(gNight) && !gatherSafe(gZombie), 'Gather\'s model is asked only by day with no hostile within 10 blocks');
+  const gAsked = [];
+  const gModels = createModelLayers({ mode: 'shadow', fetchImpl: async (url, opts) => { const b = JSON.parse(opts.body); gAsked.push(b); return { ok: true, json: async () => ({ pick: 0, p: 0.9, probs: [0.9], ms: 5 }) }; }, now: () => mClock });
+  gModels.consider('gather', gDay, lDrives()); await new Promise((r) => setTimeout(r, 20));
+  dreamCheck(gAsked.length >= 1 && /Lying on the ground near me: oak log 3 blocks away\./.test(gAsked[0].situation), 'Gather is told what lies on the ground in reach, not only offered it on the menu');
+  const gNightModels = createModelLayers({ mode: 'shadow', fetchImpl: async (url, opts) => { gAsked.push(JSON.parse(opts.body)); return { ok: true, json: async () => ({ pick: 0, p: 0.9, probs: [0.9], ms: 5 }) }; }, now: () => mClock });
+  const gBefore = gAsked.length;
+  gNightModels.consider('gather', gNight, lDrives()); await new Promise((r) => setTimeout(r, 20));
+  const gNightAns = gNightModels.consider('gather', gNight, lDrives());
+  dreamCheck(gAsked.length === gBefore && gNightAns && gNightAns.key === 'nothing' && gNightAns.gated, 'at night Gather\'s model is not asked: its answer is "nothing" (gated)');
 
   // ---- Weighted memory and forgetting (docs/design-subsumption.md, stage 2)
   console.log('\n=== Weighted memory ===');

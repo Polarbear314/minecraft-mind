@@ -82,6 +82,8 @@ One family, so size is the main difference between the layers (the taper: 4B →
 - Kept in shadow until the baseline days are in. Retraining them (stage 7) needs Unsloth/PEFT and the Anthropic-terms check; editing them (7b) is designed above.
 - `npm run sim`: 321 checks (7 new).
 
+**Stage 7b sandbox trial (2026-11-17, `docs/results-7b-trial.md`).** On a separate copy of Gather's 1.7B model, Opus picked a steering edit from the model's indexed insides (layer 18, a keyed rank-1 change), softened it, then **withdrew** it: no real gain, and more gathering with a zombie close. The model represents "worth gathering" inside, but that barely drives its answer. Telling it what lies in reach did what the edit couldn't (12 → 21 of 40 right, no weight change), but it still gathered at night and near hostiles, even with the danger spelled out. So, Brooks-style, the "when" is now wired and the model chooses only "what" (`brain/modelLayers.js`): **Gather's model is asked only by day with no hostile within 10 blocks** (otherwise its answer is "nothing", logged `gated`), and its situation now says what lies on the ground in reach. Takes effect at the next restart of the agent. `npm run sim`: 3 new checks.
+
 **Eat to heal (2026-11-17, the gap Opus found).** Survive now eats when health is at 10 or below, the food bar is under 18 (where health starts coming back), and food is carried, whatever the hunger drive says. Live, right after the restart: three potatoes eaten in a row at low health.
 
 `npm run sim`: 307 checks.
@@ -187,7 +189,7 @@ So the vault gets a **live memory** the layers retrieve from, and an **archive**
 
 ### Two routes for the bottom layers
 
-The MIT CSAIL report (Takehi, Teoh, Zhang & Khattab, November 2026, reported in VentureBeat) says GPT-6 Astra read a small model's weights directly and wrote corrections into them, with no training. It raised Qwen3.5-0.8B's math score from 7.9% to 48.1% while changing 0.016% of its weights. *The paper is not out yet and the figures are self-reported; cite it as a reported result.*
+The MIT CSAIL report (Takehi, Teoh, Zhang & Khattab, November 2026, reported in VentureBeat) says GPT-6 Astra read a small model's weights directly and wrote corrections into them, with no training. It raised Qwen3.5-0.8B's math score from 7.9% to 48.1% while changing 0.016% of its weights. *The paper is not out yet and the figures are self-reported; cite it as a reported result.* **Update (2026-11-17):** the work is now public as "Sparks of Weight-Space Programming" (Nov 2, 2026), with the edited checkpoint on Hugging Face. An independent byte-level check of that checkpoint (Carlos Toledo) found the headline edit is **rank-1**: one direction removed ×6 from 64 columns of `mlp.down_proj` in layers 15 and 19 (a steering-style edit, its strength found by trial). It also found that the gain comes mostly from the model *finishing* instead of looping, and that the 7.9% baseline is mostly a sampling-settings effect (22–44% under Qwen's own settings). Follow-ups: WeightBench (arXiv 2611.18553), a backdoor study (2611.17395), and Claude Opus 5.5 editing Qwen3.5-0.8B for computational biology (2611.20566).
 
 The bottom layers are plain classifiers, and their weights are readable: each says how much something in the situation pushes toward an act ("lava nearby → approach: +0.4"). There are only a few thousand. So both routes are possible, on alternate nights:
 
