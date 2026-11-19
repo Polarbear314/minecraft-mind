@@ -206,16 +206,77 @@ class Nothing:
         pass
 
 
-def main():
-    # Minecraft days, not calendar days: learn from every day up to the last write,
-    # gate on the days since (the days the last patch was live). First run: the last 3.
+def load_rows():
+    """Every labelled row with a Minecraft day, one copy each (a calendar day may be labelled twice), oldest first."""
     rows = []
     for f in sorted(glob.glob(os.path.join(ROWS, f"{LAYER}-rows-*.jsonl"))):
         rows += [r for r in st.read_jsonl(f) if r.get("mcDay")]
     seen = {}
-    for r in rows:  # a calendar day may be labelled twice (yesterday, then today): keep one copy
+    for r in rows:
         seen[r["id"]] = r
-    rows = sorted(seen.values(), key=lambda r: r["ts"])
+    return sorted(seen.values(), key=lambda r: r["ts"])
+
+
+def split_rows(rows, last):
+    """Learn from the days up to `last`, hold out the days after: (train, learn, valid, teach, held)."""
+    train = [as_case(r, "train") for r in rows if r["mcDay"] <= last]
+    held = [as_case(r, "held") for r in rows if r["mcDay"] > last]
+    held = spread([r for r in held if r["right"] != "nothing"], 100) + spread([r for r in held if r["right"] == "nothing"], 100)
+    # Validation: every 4th learning row (not the last quarter in time, which would take
+    # most of the days the layer acted away from the teacher); it chooses the setting.
+    learn = [r for i, r in enumerate(train) if i % 4 != 3]
+    valid = [r for i, r in enumerate(train) if i % 4 == 3]
+    valid = spread([r for r in valid if r["right"] != "nothing"], VALID_PER_LABEL) + spread([r for r in valid if r["right"] == "nothing"], VALID_PER_LABEL)
+    teach = teacher_sample([r for r in learn if r["right"] != "nothing"], PER_LABEL) + teacher_sample([r for r in learn if r["right"] == "nothing"], PER_LABEL)
+    for c in teach:
+        c["teacher"] = {k: (0.85 if k == c["right"] else 0.15 / (len(c["keys"]) - 1)) for k in c["keys"]}
+    return train, learn, valid, teach, held
+
+
+RUNS = os.path.join(PATCHES, "runs")  # every write's report and candidate weights, one file each, never overwritten
+
+
+def run_id(dry):
+    return f"{LAYER}-{time.strftime('%Y%m%d-%H%M%S')}" + ("-dry" if dry else "")
+
+
+def save_run(rid, report, layer=None, cols=None, T=None, examples=None, solved=None):
+    """Keep this write for later analysis: the report (runs/<id>.json) and, when the solve ran,
+    its candidate weights and targets (runs/<id>.pt): per lam the undosed dW, also split into
+    the part from the "gather" rows and the part from the "nothing" rows (they add up to it:
+    the solve is linear in the targets), and each teacher row's target and key (half)."""
+    os.makedirs(RUNS, exist_ok=True)
+    report["run"] = rid
+    keep = T is not None and cols is not None
+    report["runFile"] = os.path.join("runs", f"{rid}.pt") if keep else None
+    with open(os.path.join(RUNS, f"{rid}.json"), "w", encoding="utf8") as f:
+        json.dump(report, f, indent=1)
+    if not keep:
+        return None
+    is_g = torch.tensor([c["right"] != "nothing" for c, _ in examples])
+    cand = {}
+    for lam, W in (solved or {}).items():
+        cand[str(lam)] = {"dW": W.half(), "gather": dw.solve(zero_rows(T, ~is_g), cols, lam).half(),
+                          "nothing": dw.solve(zero_rows(T, is_g), cols, lam).half()}
+    torch.save({"layer": layer, "cols": cols, "builtOn": report.get("liveVersion"), "candidates": cand,
+                "targets": {"delta": torch.stack([r["delta"] for r in T["rows"]]).half(),
+                            "key": torch.stack([r["key"] for r in T["rows"]]).half(),
+                            "id": [c["id"] for c, _ in examples], "right": [c["right"] for c, _ in examples],
+                            "mcDay": [c["mcDay"] for c, _ in examples], "order": [o for _, o in examples]},
+                "report": report}, os.path.join(RUNS, f"{rid}.pt"))
+    return os.path.join(RUNS, f"{rid}.pt")
+
+
+def zero_rows(T, mask):
+    """T with the target change of the masked rows set to zero (their keys still constrain the solve)."""
+    return {"rows": [dict(r, delta=torch.zeros_like(r["delta"])) if m else r for r, m in zip(T["rows"], mask.tolist())], "plain": T["plain"]}
+
+
+def main():
+    # Minecraft days, not calendar days: learn from every day up to the last write,
+    # gate on the days since (the days the last patch was live). First run: the last 3.
+    rid = run_id("--dry" in sys.argv)
+    rows = load_rows()
     days = sorted({r["mcDay"] for r in rows})
     if not days:
         print("[write] RESULT " + json.dumps({"layer": LAYER, "skipped": "no labelled rows with a Minecraft day yet"}))
@@ -234,17 +295,7 @@ def main():
     if not held_days or not train_days:
         print("[write] RESULT " + json.dumps({"layer": LAYER, "skipped": "need days to learn from and days since the last write to test on"}))
         return
-    train = [as_case(r, "train") for r in rows if r["mcDay"] <= last]
-    held = [as_case(r, "held") for r in rows if r["mcDay"] > last]
-    held = spread([r for r in held if r["right"] != "nothing"], 100) + spread([r for r in held if r["right"] == "nothing"], 100)
-    # Validation: every 4th learning row (not the last quarter in time, which would take
-    # most of the days the layer acted away from the teacher); it chooses the setting.
-    learn = [r for i, r in enumerate(train) if i % 4 != 3]
-    valid = [r for i, r in enumerate(train) if i % 4 == 3]
-    valid = spread([r for r in valid if r["right"] != "nothing"], VALID_PER_LABEL) + spread([r for r in valid if r["right"] == "nothing"], VALID_PER_LABEL)
-    teach = teacher_sample([r for r in learn if r["right"] != "nothing"], PER_LABEL) + teacher_sample([r for r in learn if r["right"] == "nothing"], PER_LABEL)
-    for c in teach:
-        c["teacher"] = {k: (0.85 if k == c["right"] else 0.15 / (len(c["keys"]) - 1)) for k in c["keys"]}
+    train, learn, valid, teach, held = split_rows(rows, last)
     t0 = time.time()
     timing = {}
     st.load()
@@ -271,6 +322,7 @@ def main():
     if live_meta:
         report["liveVersion"], report["builtOn"] = live_meta.get("version"), live_meta.get("version")
     best, live, after, kl = None, None, None, None
+    T, examples, cols, kept, ok = None, None, None, {}, []
     with (dw.MultiWrite(live_parts) if live_parts else Nothing()):
         if live_parts:
             report["livePlainKL"] = round(dw.plain_kl(base_plain), 4)
@@ -298,11 +350,14 @@ def main():
             samples["recent"] = {"rows": recent_rows, "plain": T["plain"]}
         t = time.time()
         tried = []
+        kept = {}  # the "all" sample's undosed solve per lam, kept with the run
         for sname, TS in samples.items():
             solved = {}
             for lam, dose in SETTINGS:
                 if lam not in solved:
                     solved[lam] = dw.solve(TS, cols, lam)
+                    if sname == "all":
+                        kept[lam] = solved[lam]
                 with dw.Write(layer, cols, dose * solved[lam]):
                     k = dw.plain_kl(base_plain)
                     b = leaning(score(valid)) if k <= 0.03 else None
@@ -361,8 +416,16 @@ def main():
     report["timing"] = timing
     report["secs"] = round(time.time() - t0)
     os.makedirs(PATCHES, exist_ok=True)
-    with open(os.path.join(PATCHES, f"{LAYER}-v{report.get('version', 'dry')}.json"), "w", encoding="utf8") as f:
-        json.dump(report, f, indent=1)
+    if report.get("version"):  # a saved version's report sits beside it (learn/nightlyWrite.js reads the newest)
+        with open(os.path.join(PATCHES, f"{LAYER}-v{report['version']}.json"), "w", encoding="utf8") as f:
+            json.dump(report, f, indent=1)
+    # Every run, passed, refused or dry, also keeps its own report and candidate weights
+    # (runs/<layer>-<time>[-dry].json/.pt), so a refused lesson can still be studied later.
+    try:
+        save_run(rid, report, layer, cols, T, examples, kept)
+    except Exception as err:  # keeping the record must never cost the write itself
+        print(f"[write] could not keep the run's weights: {err}", flush=True)
+        save_run(rid, report)
     if report.get("passed") and arg("reload") and "--dry" not in sys.argv:  # apply it in the live model service
         try:
             import urllib.request
