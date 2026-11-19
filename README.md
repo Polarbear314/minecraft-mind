@@ -10,23 +10,7 @@ Built by Henry Risch (Bowdoin College), 2026, for PHIL 2400 *Minds and Machines*
 
 A stack of layers, Rodney Brooks-style: each tick (1.5 s) every layer proposes an act or stays quiet, and the first that speaks gets the body.
 
-```mermaid
-flowchart TB
-    subgraph T3["Language-model layers (small open Qwen models, 4-bit, on the GPU)"]
-        MAKE["Make: Qwen3-4B: crafts, runs plans"]
-        SHELTER["Shelter: Qwen2.5-3B: digs in, seals, beds"]
-        GATHER["Gather: Qwen3-1.7B: picks up, breaks blocks<br/><b>acting, learns from its own outcomes</b>"]
-    end
-    subgraph T2["Readable classifiers (about 120 named weights each)"]
-        FORAGE["Forage: eat, harvest, hunt"]
-        WANDER["Wander: explore, fiddle"]
-    end
-    subgraph T1["Instinct floor (hand-written, never learns)"]
-        SURVIVE["Survive: flee, avoid lava and drops, eat to heal, dig in at dusk, climb out at dawn"]
-    end
-    SURVIVE -->|overrides everything| MAKE
-    MAKE --> SHELTER --> GATHER --> FORAGE --> WANDER
-```
+![MindBot's subsumption stack: every layer reads the senses in parallel; where their acts meet, a higher layer suppresses the ones below](docs/images/mindbot-stack.svg)
 
 - **No AI decides by day.** The layers act on their own. Claude Sonnet only *narrates*: it explains the body's acts in the first person without being told which layer caused them, like Gazzaniga's split-brain interpreter.
 - **Memory** is an Obsidian vault of linked notes, with weights, embedding retrieval ([FreeLAB](https://github.com/Polarbear314/freelab)-style, using nomic-embed-text), and forgetting into gist notes. Nothing is ever deleted.

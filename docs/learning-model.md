@@ -8,23 +8,7 @@ MindBot is a creature in a small Minecraft world whose mind is a **stack of beha
 
 ## The stack (first layer that speaks gets the body)
 
-```mermaid
-flowchart TB
-    subgraph T3["Tier 3: language-model layers (Qwen, 4-bit, on the GPU)"]
-        MAKE["Make: Qwen3-4B<br/>crafts, runs plans<br/><i>shadow</i>"]
-        SHELTER["Shelter: Qwen2.5-3B<br/>digs in, seals, beds<br/><i>shadow</i>"]
-        GATHER["Gather: Qwen3-1.7B<br/>picks up, breaks blocks<br/><b>acting, learns nightly</b>"]
-    end
-    subgraph T2["Tier 2: readable classifiers (about 120 named weights each)"]
-        FORAGE["Forage<br/>eat, harvest, hunt"]
-        WANDER["Wander<br/>explore, fiddle"]
-    end
-    subgraph T1["Tier 1: instinct floor (hand-written, never learns)"]
-        SURVIVE["Survive<br/>flee, avoid lava and drops, eat to heal,<br/>dig in at dusk, climb out at dawn"]
-    end
-    SURVIVE -->|"overrides everything"| MAKE
-    MAKE --> SHELTER --> GATHER --> FORAGE --> WANDER
-```
+![MindBot's subsumption stack: every layer reads the senses in parallel; where their acts meet, a higher layer suppresses the ones below](images/mindbot-stack.svg)
 
 **The order is Survive > Make > Shelter > Gather > Forage > Wander.** Survive is listed at the bottom because it is the floor, but it overrides everything, like collision avoidance in Rodney Brooks's subsumption robots. **Shadow** means a layer's choices are logged beside the hand-written ones but don't move the body. **Acting** means its choices move the body.
 

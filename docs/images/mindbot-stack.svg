@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 572" width="960" height="572" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#57606a"/>
+    </marker>
+    <marker id="arrowUp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1f2328"/>
+    </marker>
+  </defs>
+
+  <!-- background -->
+  <rect x="0" y="0" width="960" height="572" rx="14" fill="#ffffff"/>
+
+  <!-- title -->
+  <text x="40" y="38" font-size="20" font-weight="700" fill="#1f2328">MindBot's mind: a subsumption stack</text>
+  <text x="40" y="58" font-size="13" fill="#57606a">Every 1.5 s each layer reads the senses and proposes an act, or stays quiet. Where acts meet,</text>
+  <text x="40" y="75" font-size="13" fill="#57606a">a higher layer suppresses the ones below: the first that speaks gets the body.</text>
+
+  <g transform="translate(0,12)">
+  <!-- senses -->
+  <rect x="40" y="86" width="120" height="420" rx="10" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5"/>
+  <text x="100" y="270" font-size="16" font-weight="700" fill="#1f2328" text-anchor="middle">Senses</text>
+  <text x="100" y="292" font-size="11.5" fill="#57606a" text-anchor="middle">blocks, crops, items</text>
+  <text x="100" y="308" font-size="11.5" fill="#57606a" text-anchor="middle">mobs, animals</text>
+  <text x="100" y="324" font-size="11.5" fill="#57606a" text-anchor="middle">health, food</text>
+  <text x="100" y="340" font-size="11.5" fill="#57606a" text-anchor="middle">time of day</text>
+  <text x="100" y="356" font-size="11.5" fill="#57606a" text-anchor="middle">what it carries</text>
+  <text x="100" y="372" font-size="11.5" fill="#57606a" text-anchor="middle">memories</text>
+
+  <!-- body -->
+  <rect x="820" y="86" width="100" height="420" rx="10" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5"/>
+  <text x="870" y="290" font-size="16" font-weight="700" fill="#1f2328" text-anchor="middle">Body</text>
+  <text x="870" y="312" font-size="11.5" fill="#57606a" text-anchor="middle">one act</text>
+  <text x="870" y="328" font-size="11.5" fill="#57606a" text-anchor="middle">per tick</text>
+
+  <!-- layer rows: y centres 120, 190, 260, 330, 400, 470 -->
+  <!-- 1 Survive (instinct floor, overrides everything) -->
+  <line x1="160" y1="120" x2="198" y2="120" stroke="#57606a" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="200" y="96" width="470" height="48" rx="8" fill="#f1ece3" stroke="#8a7f6a" stroke-width="1.5"/>
+  <text x="216" y="116" font-size="14.5" font-weight="700" fill="#1f2328">Survive</text>
+  <text x="300" y="116" font-size="12" fill="#57606a">hand-written instinct: flee, avoid lava and drops, eat to heal</text>
+  <text x="216" y="134" font-size="12" fill="#57606a">dig in at dusk, climb out at dawn</text>
+  <text x="656" y="134" font-size="11.5" fill="#8a7f6a" text-anchor="end" font-style="italic">never learns</text>
+
+  <!-- 2 Make -->
+  <line x1="160" y1="190" x2="198" y2="190" stroke="#57606a" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="200" y="166" width="470" height="48" rx="8" fill="#e3edf8" stroke="#3d6fa8" stroke-width="1.5"/>
+  <text x="216" y="186" font-size="14.5" font-weight="700" fill="#1f2328">Make</text>
+  <text x="300" y="186" font-size="12" fill="#57606a">language model, Qwen3-4B: crafts, runs plans</text>
+  <text x="656" y="204" font-size="11.5" fill="#3d6fa8" text-anchor="end" font-style="italic">shadow</text>
+
+  <!-- 3 Shelter -->
+  <line x1="160" y1="260" x2="198" y2="260" stroke="#57606a" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="200" y="236" width="470" height="48" rx="8" fill="#e3edf8" stroke="#3d6fa8" stroke-width="1.5"/>
+  <text x="216" y="256" font-size="14.5" font-weight="700" fill="#1f2328">Shelter</text>
+  <text x="300" y="256" font-size="12" fill="#57606a">language model, Qwen2.5-3B: digs in, seals, beds</text>
+  <text x="656" y="274" font-size="11.5" fill="#3d6fa8" text-anchor="end" font-style="italic">shadow</text>
+
+  <!-- 4 Gather -->
+  <line x1="160" y1="330" x2="198" y2="330" stroke="#57606a" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="200" y="306" width="470" height="48" rx="8" fill="#d6e6f7" stroke="#1f5fa8" stroke-width="2.5"/>
+  <text x="216" y="326" font-size="14.5" font-weight="700" fill="#1f2328">Gather</text>
+  <text x="300" y="326" font-size="12" fill="#57606a">language model, Qwen3-1.7B: picks up, breaks blocks</text>
+  <text x="656" y="344" font-size="11.5" fill="#1f5fa8" text-anchor="end" font-weight="700">acting · weights rewritten from its own outcomes</text>
+
+  <!-- 5 Forage -->
+  <line x1="160" y1="400" x2="198" y2="400" stroke="#57606a" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="200" y="376" width="470" height="48" rx="8" fill="#e2f2e5" stroke="#3f8a55" stroke-width="1.5"/>
+  <text x="216" y="396" font-size="14.5" font-weight="700" fill="#1f2328">Forage</text>
+  <text x="300" y="396" font-size="12" fill="#57606a">readable classifier: eat, harvest, hunt</text>
+  <text x="656" y="414" font-size="11.5" fill="#3f8a55" text-anchor="end" font-style="italic">reviewed and retrained nightly</text>
+
+  <!-- 6 Wander -->
+  <line x1="160" y1="470" x2="198" y2="470" stroke="#57606a" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="200" y="446" width="470" height="48" rx="8" fill="#e2f2e5" stroke="#3f8a55" stroke-width="1.5"/>
+  <text x="216" y="466" font-size="14.5" font-weight="700" fill="#1f2328">Wander</text>
+  <text x="300" y="466" font-size="12" fill="#57606a">readable classifier: explore, fiddle (the default)</text>
+  <text x="656" y="484" font-size="11.5" fill="#3f8a55" text-anchor="end" font-style="italic">reviewed and retrained nightly</text>
+
+  <!-- suppression column: each layer's act enters an S node; acts flow up; a higher layer replaces what comes from below -->
+  <g stroke="#57606a" stroke-width="1.5">
+    <line x1="670" y1="120" x2="726" y2="120" marker-end="url(#arrow)"/>
+    <line x1="670" y1="190" x2="726" y2="190" marker-end="url(#arrow)"/>
+    <line x1="670" y1="260" x2="726" y2="260" marker-end="url(#arrow)"/>
+    <line x1="670" y1="330" x2="726" y2="330" marker-end="url(#arrow)"/>
+    <line x1="670" y1="400" x2="726" y2="400" marker-end="url(#arrow)"/>
+    <line x1="670" y1="470" x2="726" y2="470" marker-end="url(#arrow)"/>
+  </g>
+  <g stroke="#1f2328" stroke-width="2.2">
+    <line x1="742" y1="456" x2="742" y2="416" marker-end="url(#arrowUp)"/>
+    <line x1="742" y1="386" x2="742" y2="346" marker-end="url(#arrowUp)"/>
+    <line x1="742" y1="316" x2="742" y2="276" marker-end="url(#arrowUp)"/>
+    <line x1="742" y1="246" x2="742" y2="206" marker-end="url(#arrowUp)"/>
+    <line x1="742" y1="176" x2="742" y2="136" marker-end="url(#arrowUp)"/>
+    <line x1="756" y1="120" x2="818" y2="120" marker-end="url(#arrowUp)"/>
+  </g>
+  <g fill="#ffffff" stroke="#1f2328" stroke-width="2">
+    <circle cx="742" cy="120" r="14"/>
+    <circle cx="742" cy="190" r="14"/>
+    <circle cx="742" cy="260" r="14"/>
+    <circle cx="742" cy="330" r="14"/>
+    <circle cx="742" cy="400" r="14"/>
+    <circle cx="742" cy="470" r="14"/>
+  </g>
+  <g font-size="13" font-weight="700" fill="#1f2328" text-anchor="middle">
+    <text x="742" y="125">S</text><text x="742" y="195">S</text><text x="742" y="265">S</text>
+    <text x="742" y="335">S</text><text x="742" y="405">S</text><text x="742" y="475">S</text>
+  </g>
+
+  <!-- legend -->
+  <g font-size="12" fill="#57606a">
+    <rect x="40" y="524" width="14" height="14" rx="3" fill="#f1ece3" stroke="#8a7f6a"/>
+    <text x="60" y="535">instinct floor (never learns)</text>
+    <rect x="240" y="524" width="14" height="14" rx="3" fill="#e3edf8" stroke="#3d6fa8"/>
+    <text x="260" y="535">small language models (learn while it sleeps)</text>
+    <rect x="530" y="524" width="14" height="14" rx="3" fill="#e2f2e5" stroke="#3f8a55"/>
+    <text x="550" y="535">readable classifiers (learn while it sleeps)</text>
+    <circle cx="808" cy="531" r="8" fill="#ffffff" stroke="#1f2328" stroke-width="1.5"/>
+    <text x="808" y="535" font-size="10" font-weight="700" fill="#1f2328" text-anchor="middle">S</text>
+    <text x="822" y="535">suppresses below</text>
+  </g>
+  </g>
+</svg>
