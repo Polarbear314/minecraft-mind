@@ -13,7 +13,9 @@
 //   - the body did something else and nothing bad came of it (1 in 5, the
 //     stage-4 convention for "stayed quiet")      -> "nothing"
 // The question is the one the live layer was really asked (logs/questions-<day>.jsonl),
-// or, for days before those were logged, rebuilt the way the 7b trial did.
+// or, for days before those were logged, rebuilt the way the 7b trial did. Each row
+// carries its Minecraft day (mcDay, as npm run days numbers them): the nightly write
+// learns from the days up to its last run and is gated on the days since.
 require('dotenv').config({ path: require('path').resolve(__dirname, '..', '..', '.env') });
 const fs = require('fs');
 const path = require('path');
@@ -79,8 +81,20 @@ async function rebuildQuestion(t, memory) {
   return { job: JOB.gather, situation, memories, keys: menu.map((m) => m.key), acts: menu.map((m) => m.text) };
 }
 
+/** Each tick's Minecraft day number, as npm run days counts them (tools/days.js). */
+let mcDayOf = null;
+function mcDays() {
+  if (!mcDayOf) {
+    const { splitDays, readTicks } = require('../tools/days');
+    mcDayOf = new Map();
+    splitDays(readTicks()).forEach((d, i) => { for (const t of d) mcDayOf.set(t.ts, i + 1); });
+  }
+  return mcDayOf;
+}
+
 async function labelDay(day, memory) {
   const ticks = readJsonl(path.join(LOGS, `ticks-${day}.jsonl`)).filter((t) => t.action && t.aff && t.tod != null);
+  const mc = mcDays();
   const questions = readJsonl(path.join(LOGS, `questions-${day}.jsonl`)).filter((q) => q.layer === 'gather');
   const qTimes = questions.map((q) => Date.parse(q.ts));
   const nearest = (ts) => { // the question asked within 3 s before this tick
@@ -108,7 +122,7 @@ async function labelDay(day, memory) {
     const q = nearest(t.ts) || await rebuildQuestion(t, memory);
     if (!q.keys || !q.keys.some((k) => k !== 'nothing')) continue; // nothing to gather on the menu
     if (label !== 'nothing' && !q.keys.includes(label)) label = q.keys.find((k) => k !== 'nothing'); // the menu named it differently
-    rows.push({ id: `${day}-${i}`, ts: t.ts, day, job: q.job, situation: q.situation, memories: q.memories || [], keys: q.keys, acts: q.acts, label, why, source: questions.length && nearest(t.ts) ? 'asked' : 'rebuilt' });
+    rows.push({ id: `${day}-${i}`, ts: t.ts, day, mcDay: mc.get(t.ts) || null, job: q.job, situation: q.situation, memories: q.memories || [], keys: q.keys, acts: q.acts, label, why, source: questions.length && nearest(t.ts) ? 'asked' : 'rebuilt' });
   }
   return rows;
 }

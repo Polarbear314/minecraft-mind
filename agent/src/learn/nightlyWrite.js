@@ -32,6 +32,18 @@ function run(cmd, args, { spawnImpl = spawn, env = process.env } = {}) {
   });
 }
 
+/**
+ * Is a write due? Every `every` Minecraft days (WRITE_EVERY, default 3): the write
+ * learns from the days up to its last run and is gated on the days since, so each
+ * run has new days to judge by (<layer>-state.json, kept by nightly_write.py).
+ */
+function due(layer, currentMcDay, every = 3, dir = WRITE_LOGS) {
+  try {
+    const s = JSON.parse(fs.readFileSync(path.join(dir, `${layer}-state.json`), 'utf8'));
+    return currentMcDay - Number(s.lastMcDay) >= every;
+  } catch (_) { return true; } // no write yet
+}
+
 /** The newest version's report for a layer (what the last write decided), or null. */
 function lastResult(layer, dir = path.join(ROOT, 'logs', 'layers', 'patches')) {
   try {
@@ -48,9 +60,11 @@ function lastResult(layer, dir = path.join(ROOT, 'logs', 'layers', 'patches')) {
  */
 async function runNightlyWrite({ layers = ['gather'], now = new Date(), endpoint = 'http://127.0.0.1:3010', spawnImpl = spawn, python = path.join(ROOT, 'agent', '.venv-laya', 'Scripts', 'python.exe') } = {}) {
   const results = [];
-  const days = [localDate(new Date(now.getTime() - 86400000)), localDate(now)];
+  // Label today, and yesterday only if it hasn't been (a finished day's labels don't change).
+  const yesterday = localDate(new Date(now.getTime() - 86400000));
   for (const layer of layers) {
     if (!LABELLERS[layer]) { results.push({ layer, error: 'no outcome labels for this layer yet' }); continue; }
+    const days = [...(fs.existsSync(path.join(WRITE_LOGS, `${layer}-rows-${yesterday}.jsonl`)) ? [] : [yesterday]), localDate(now)];
     const lab = await run(process.execPath, [LABELLERS[layer], '--days', days.join(',')], { spawnImpl });
     if (lab.code !== 0) { results.push({ layer, error: `labelling failed: ${lab.out.slice(-300)}` }); continue; }
     const log = path.join(WRITE_LOGS, `nightly-${layer}-${localDate(now)}.log`);
@@ -70,4 +84,4 @@ async function runNightlyWrite({ layers = ['gather'], now = new Date(), endpoint
   return results;
 }
 
-module.exports = { runNightlyWrite, lastResult, localDate };
+module.exports = { runNightlyWrite, lastResult, localDate, due };

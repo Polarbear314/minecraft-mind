@@ -192,7 +192,11 @@ const nightly = layersMode && dreamProvider && config.learnedLayers !== 'off' ? 
     // The model layers' nightly weight write (learn/nightlyWrite.js), in the
     // background: the day's outcomes written into a layer's weights, gated,
     // and applied by the model service if it passed. NIGHTLY_WRITE=gather turns it on.
-    const writeLayers = (process.env.NIGHTLY_WRITE || '').split(',').map((x) => x.trim()).filter(Boolean);
+    const { due: writeDue } = require('./learn/nightlyWrite');
+    const mcDay = require('./tools/days').splitDays(readTicks()).length;
+    const every = Math.max(1, Number(process.env.WRITE_EVERY || 3));
+    const writeLayers = (process.env.NIGHTLY_WRITE || '').split(',').map((x) => x.trim()).filter(Boolean)
+      .filter((l) => writeDue(l, mcDay, every)); // every WRITE_EVERY Minecraft days
     if (writeLayers.length) {
       const { runNightlyWrite } = require('./learn/nightlyWrite');
       runNightlyWrite({ layers: writeLayers, endpoint: `http://127.0.0.1:${config.cortexPort}` }).then((rs) => {

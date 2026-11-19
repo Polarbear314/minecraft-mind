@@ -103,6 +103,13 @@ One family, so size is the main difference between the layers (the taper: 4B →
   - **No fed-in rule:** `GATHER_RULE=off` drops the day/no-hostile rule, so Gather decides for itself when it's safe, and learns it. Survive stays the instinct floor (flee, avoid lava and drops).
   - **Exploration:** `EXPLORE=0.1`. An acting layer takes its second choice 10% of the time (decided once per answer, logged `explored`), so it meets outcomes it would never choose.
   - **The learning curve:** `npm run days` adds Gather's own record per day (acted, explored, gatherings that went well or badly, mistake rate, the patch version live), with the mistake rate as a sparkline across days.
+  - **Faster lessons (2026-11-18):**
+    - *When it runs:* a write runs every 3 Minecraft days (`WRITE_EVERY`), not once a calendar day. It learns from every Minecraft day up to its last run and is gated on the days since (the days the last patch was live; `logs/layers/write/gather-state.json`). That gives about 20 lessons a real day instead of 1.
+    - *How it runs:* in its own detached process (an agent restart had killed it twice), applying its own patch if it passes.
+    - *The bar:* a new edit must beat **the layer as it is live now** (the current patch), not just the model as downloaded.
+    - *Speed:* about 10 minutes beside the live models, down from 16 (fewer steps, fewer settings tried).
+    - *Exploration:* raised to 20%.
+    - *First results:* patch v1 passed (balanced accuracy 0.56 → 0.60, learned mostly from the days before Gather acted). A dry run of the per-Minecraft-day write, gated on days 64–66 (Gather acting), would pass 0.54 → 0.605.
   - **The dig-in instinct fixed first** (`decision/reflexes.js`). Live, Shelter's dig count was sometimes lost and the body dug straight down a dozen blocks, into stone and water (two deaths, 2026-11-18). Now, in a closed shaft with nothing overhead and no count, it seals overhead, and it digs at most two blocks more for material. Without the fix those deaths would have blurred Gather's curve.
 
 **Eat to heal (2026-11-17, the gap Opus found).** Survive now eats when health is at 10 or below, the food bar is under 18 (where health starts coming back), and food is carried, whatever the hunger drive says. Live, right after the restart: three potatoes eaten in a row at low health.

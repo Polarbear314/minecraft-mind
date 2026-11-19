@@ -1998,7 +1998,14 @@ async function main() {
   dreamCheck(gatherKey({ type: 'pickup' }) === 'pickup' && gatherKey({ type: 'dig', at: 'ahead' }) === 'dig ahead' && gatherKey({ type: 'explore' }) === null
     && gOutcome(gGood, 0, true) === 'good' && gOutcome(gBad, 0, true) === 'bad',
     'Gather\'s outcome labels: gathering that filled the pack unharmed is good, gathering then hurt is bad');
-  const { runNightlyWrite } = require('./learn/nightlyWrite');
+  const { runNightlyWrite, due: writeDue } = require('./learn/nightlyWrite');
+  {
+    const dueDir = fs.mkdtempSync(path.join(os.tmpdir(), 'minecraft-mind-write-'));
+    const first = writeDue('gather', 70, 3, dueDir);
+    fs.writeFileSync(path.join(dueDir, 'gather-state.json'), JSON.stringify({ lastMcDay: 68 }));
+    dreamCheck(first && !writeDue('gather', 70, 3, dueDir) && writeDue('gather', 71, 3, dueDir),
+      'a weight write is due every 3 Minecraft days after the last one (and the first time)');
+  }
   const EventEmitter = require('events');
   const spawned = [];
   const fakeSpawn = (cmd, args, opts) => {
