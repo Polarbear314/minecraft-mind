@@ -1998,6 +1998,17 @@ async function main() {
   dreamCheck(gatherKey({ type: 'pickup' }) === 'pickup' && gatherKey({ type: 'dig', at: 'ahead' }) === 'dig ahead' && gatherKey({ type: 'explore' }) === null
     && gOutcome(gGood, 0, true) === 'good' && gOutcome(gBad, 0, true) === 'bad',
     'Gather\'s outcome labels: gathering that filled the pack unharmed is good, gathering then hurt is bad');
+  // The 2026-11-19 audit: credit only what the act yields, stop at a gap, and a refused act is no lesson.
+  const gAt = (k) => `2026-11-20T10:00:${String(k).padStart(2, '0')}.000Z`;
+  const gDig = (block, later, gapAfter = null) => [gTick({ action: { type: 'dig', at: 'ahead' }, result: { ok: true, did: `breaking the ${block} ahead` } }),
+    ...Array.from({ length: 21 }, (_, k) => gTick({ ts: gapAfter != null && k >= gapAfter ? `2026-11-20T10:0${2 + Math.floor(k / 60)}:${String(k % 60).padStart(2, '0')}.000Z` : gAt(k + 1), inv: later }))];
+  dreamCheck(gOutcome(gDig('grass block', 'dirt x3'), 0, true) === 'good'
+    && gOutcome(gDig('grass block', 'dirt x2, oak_sapling x1'), 0, true) === null
+    && gOutcome(gDig('short grass', 'dirt x2'), 0, true) === null
+    && gOutcome(gDig('stone', 'dirt x2, cobblestone x1'), 0, true) === 'good'
+    && gOutcome(gDig('grass block', 'dirt x3', 0), 0, true) === null
+    && gOutcome([gTick({ action: { type: 'dig', at: 'ahead' }, result: { ok: false, reason: 'there was only air ahead' } }), ...gGood.slice(1)], 0, true) === 'refused',
+    'Gather\'s labels credit only what the act yields (the dug block\'s drop), stop at a gap in the log, and a refused act teaches nothing');
   const { runNightlyWrite, due: writeDue } = require('./learn/nightlyWrite');
   {
     const dueDir = fs.mkdtempSync(path.join(os.tmpdir(), 'minecraft-mind-write-'));

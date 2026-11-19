@@ -8,8 +8,14 @@
 // For every tick where Gather's model was asked (shadow entry, not gated) and its
 // menu offered something to gather:
 //   - the body gathered (pickup / dig, whichever layer chose it) and it went well
-//     (the pack grew, no harm in 30 s)            -> that act
-//   - the body gathered and it went badly (hurt 4+, died, or couldn't) -> "nothing"
+//     (no harm in 30 s, and the pack grew in what that act yields: the broken
+//     block's drop for a dig, anything for a pickup) -> that act
+//   - the body gathered and it went badly (hurt 4+ or died in 30 s) -> "nothing"
+//   - no label (the 2026-11-19 audit, logs/layers/patches/runs/labelaudit-*): an act
+//     the world refused ("there was only air ahead": the block was gone or the body
+//     had turned, a fault of the action, not of the choice); a dig whose block yields
+//     nothing known; and the 30 s window ends at a gap in the log (a disconnect), for
+//     the pack as well as for harm
 //   - the body did something else and nothing bad came of it (1 in 5, the
 //     stage-4 convention for "stayed quiet")      -> "nothing"
 // The question is the one the live layer was really asked (logs/questions-<day>.jsonl),
@@ -36,17 +42,47 @@ function readJsonl(file) {
   return out;
 }
 
-const invCount = (inv) => String(inv || '').split(',').reduce((s, x) => { const m = x.trim().match(/ x(\d+)$/); return s + (m ? Number(m[1]) : 0); }, 0);
+/** The pack as { item: count } (the tick log keeps the inventory as text, "dirt x28, oak_planks x11"). */
+const invItems = (inv) => String(inv || '').split(',').reduce((m, x) => {
+  const g = x.trim().match(/^(.+) x(\d+)$/);
+  if (g) m[g[1]] = (m[g[1]] || 0) + Number(g[2]);
+  return m;
+}, {});
 
-/** What came of tick i: 'good' | 'bad' | null. */
+// What breaking a block puts in the pack, when it isn't the block itself (null: nothing to count on).
+const DROPS = {
+  grass_block: ['dirt'], dirt_path: ['dirt'], farmland: ['dirt'], mycelium: ['dirt'], podzol: ['dirt'],
+  stone: ['cobblestone'], deepslate: ['cobbled_deepslate'], gravel: ['gravel', 'flint'],
+  coal_ore: ['coal'], iron_ore: ['raw_iron'], copper_ore: ['raw_copper'], gold_ore: ['raw_gold'],
+  short_grass: ['wheat_seeds'], tall_grass: ['wheat_seeds'], fern: ['wheat_seeds'],
+  glass: null, ice: null,
+};
+
+/** The items a gathering act should add: a Set of names, 'any' (a pickup), or null (unknown, or nothing). */
+function yields(t) {
+  const a = t.action || {};
+  if (a.type === 'pickup') return 'any';
+  let name = a.target && a.target.name;
+  if (!name) {
+    const m = String((t.result && t.result.did) || '').match(/breaking the (.+?)(?: (?:below|above|ahead|behind|left|right)\S*)?$/);
+    if (m) name = m[1].trim().replace(/ /g, '_');
+  }
+  if (!name) return null;
+  if (name in DROPS) return DROPS[name] && new Set(DROPS[name]);
+  if (/_leaves$/.test(name)) return new Set([name.replace(/_leaves$/, '_sapling'), 'stick', 'apple']);
+  return new Set([name]);
+}
+
+/** What came of tick i: 'good' | 'bad' | 'refused' (the world refused the act) | null (no clear outcome). */
 function outcome(ticks, i, gathered) {
   const t = ticks[i];
-  if (t.result && t.result.ok === false) return 'bad';
+  if (t.result && t.result.ok === false) return 'refused';
   let hurt = 0; let died = false;
-  const end = Math.min(ticks.length - 1, i + WINDOW);
-  for (let k = i + 1; k <= end; k++) {
+  let end = i;
+  for (let k = i + 1; k <= Math.min(ticks.length - 1, i + WINDOW); k++) {
     const p = ticks[k - 1]; const c = ticks[k];
-    if (Date.parse(c.ts) - Date.parse(p.ts) > 30000) break;
+    if (Date.parse(c.ts) - Date.parse(p.ts) > 30000) break; // a gap (a disconnect): the window ends here
+    end = k;
     if (p.health != null && c.health != null) {
       if (c.health < p.health) hurt += p.health - c.health;
       if (p.health <= 6 && c.health === 20) died = true;
@@ -54,9 +90,15 @@ function outcome(ticks, i, gathered) {
   }
   if (died || hurt >= 4) return 'bad';
   if (!gathered) return 'good';
-  // Gathering went well if the pack grew (the tick log keeps the inventory as text).
-  const later = ticks.slice(i + 1, end + 1).filter((x) => x.inv != null);
-  return later.some((x) => invCount(x.inv) > invCount(t.inv)) ? 'good' : null;
+  // Gathering went well if the pack grew in what this act yields, before any gap.
+  const want = yields(t);
+  if (!want) return null;
+  const before = invItems(t.inv);
+  const grew = (x) => {
+    const now = invItems(x.inv);
+    return Object.keys(now).some((k) => now[k] > (before[k] || 0) && (want === 'any' || want.has(k)));
+  };
+  return ticks.slice(i + 1, end + 1).filter((x) => x.inv != null).some(grew) ? 'good' : null;
 }
 
 /** The body's act as a Gather menu key, or null if it wasn't gathering. */
@@ -114,7 +156,7 @@ async function labelDay(day, memory) {
     let label = null; let why = null;
     if (key) {
       const o = outcome(ticks, i, true);
-      if (o === 'bad') { label = 'nothing'; why = 'gathered, then hurt or couldn\'t'; } else if (o === 'good') { label = key; why = 'gathered, the pack grew, unharmed'; }
+      if (o === 'bad') { label = 'nothing'; why = 'gathered, then hurt'; } else if (o === 'good') { label = key; why = 'gathered, the pack grew, unharmed'; }
     } else if (quiet++ % QUIET_SAMPLE === 0 && outcome(ticks, i, false) === 'good') {
       label = 'nothing'; why = 'did something else, nothing bad came of it';
     }
@@ -147,4 +189,4 @@ async function main() {
 }
 
 if (require.main === module) main().catch((err) => { console.error(err); process.exit(1); });
-module.exports = { labelDay, outcome, gatherKey };
+module.exports = { labelDay, outcome, gatherKey, yields, invItems };
