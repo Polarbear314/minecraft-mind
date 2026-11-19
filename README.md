@@ -1,42 +1,90 @@
 # Minecraft Mind
 
-**An AI agent that plays Minecraft while its entire memory and personality live as plain markdown in an Obsidian vault.**
+**MindBot: a Minecraft creature whose mind is a stack of behaviour layers, whose memory lives as plain markdown in an Obsidian vault, and which learns only while it sleeps, including by rewriting the weights of its own small language model from what happened to it.**
 
-Open the vault's graph view and you are looking at how the agent thinks: every creature, block and place it has met is a note with learned feelings attached, every notable moment is an Experience note, and the strategies, skills and goals it writes for itself link back to the experiences that produced them.
+Built by Henry Risch (Bowdoin College), 2026, for PHIL 2400 *Minds and Machines*. The project asks two questions:
+1. **How does a mind's behaviour change from day to day, and why?** Every change should be traceable to the night that caused it.
+2. **Can a mind learn by itself?** Can one AI change another's weights to improve it, and what does that say about learning versus being taught?
 
-Built by Henry Risch (Bowdoin College), Summer 2026, as an experiment in giving an agent persistent, inspectable memory.
+## The mind now
 
-## How it works
+A stack of layers, Rodney Brooks-style: each tick (1.5 s) every layer proposes an act or stays quiet, and the first that speaks gets the body.
 
-Every 1.5 seconds the agent runs one tick: **perceive** the world, **update** three drives (Hunger, Fear, Curiosity), **decide** an action, **act**, then **journal** to the vault while its body is already moving.
+```mermaid
+flowchart TB
+    subgraph T3["Language-model layers (small open Qwen models, 4-bit, on the GPU)"]
+        MAKE["Make: Qwen3-4B: crafts, runs plans"]
+        SHELTER["Shelter: Qwen2.5-3B: digs in, seals, beds"]
+        GATHER["Gather: Qwen3-1.7B: picks up, breaks blocks<br/><b>acting, learns from its own outcomes</b>"]
+    end
+    subgraph T2["Readable classifiers (about 120 named weights each)"]
+        FORAGE["Forage: eat, harvest, hunt"]
+        WANDER["Wander: explore, fiddle"]
+    end
+    subgraph T1["Instinct floor (hand-written, never learns)"]
+        SURVIVE["Survive: flee, avoid lava and drops, eat to heal, dig in at dusk, climb out at dawn"]
+    end
+    SURVIVE -->|overrides everything| MAKE
+    MAKE --> SHELTER --> GATHER --> FORAGE --> WANDER
+```
 
-- **Memory as markdown.** Concept notes carry drive weights and an emotional valence updated by exponential moving average, so the agent can grow used to things that never hurt it. Notable events (first encounters, damage, a feeling crossing a threshold) become timestamped Experience notes.
-- **Learning what works.** Each action is scored by what happened while it ran (damage, food, fear easing, discoveries) and written to a Strategy note with a running success rate that feeds back into later decisions.
-- **Three decision layers**, set in `.env`: a built-in rules ladder; Claude via the Anthropic API; or Claude via the Claude Code CLI on a normal account login. Claude reads the agent's own vault and returns an action plus a first-person thought. Every failure falls back to rules, so the agent never freezes.
-- **Hands, intentions, ears and dreams.** Raw motor primitives with no explanation of their purpose (hunting is meant to be invented, not taught); a standing intention for multi-step plans; in-game chat heard as advice rather than commands; and a "dreaming" pass at daybreak where the agent reflects on its own vault and writes Insights, Skills and subgoals.
+- **No AI decides by day.** The layers act on their own. Claude Sonnet only *narrates*: it explains the body's acts in the first person without being told which layer caused them, like Gazzaniga's split-brain interpreter.
+- **Memory** is an Obsidian vault of linked notes, with weights, embedding retrieval ([FreeLAB](https://github.com/Polarbear314/freelab)-style, using nomic-embed-text), and forgetting into gist notes. Nothing is ever deleted.
+- **Sleep is the only time it changes.** At each dawn:
+  - Claude Opus, its "hippocampus", **dreams**: it writes insights, goals and plans into the vault.
+  - Opus **reviews the classifiers** and writes corrections to retrain on, or edits their weights directly. Each change has to pass a gate on the creature's own outcomes.
+  - **The language-model layer's weights are rewritten from its own outcomes.** Every few Minecraft days, each Gather choice is judged by what happened next. A closed-form solve writes that lesson into the model's weights, and the patch is served only if it beats the live one on days it never trained on. Nothing about the right answer is fed in.
 
-The full design is in [`agent/README.md`](agent/README.md) and [`docs/`](docs/).
+How the two learning paths fit together, with diagrams: **[docs/learning-model.md](docs/learning-model.md)**.
+
+## Results so far
+
+- **The creature lives well:** no deaths over days of stable play, it stays fed, hunts, harvests and bakes bread. Day-by-day measures are in [docs/results-days.md](docs/results-days.md).
+- **One AI editing another's weights** ([docs/results-7b-trial.md](docs/results-7b-trial.md)), in a sandbox copy of Gather's model:
+  - steering failed;
+  - Opus's own neuron-level "surgery" fixed one flaw and broke the judgement around it;
+  - a closed-form write fitted to the creature's labelled experience installed the judgement, and did so on two flaws and two models with Opus as the teacher;
+  - the edit copies its teacher, blind spots included;
+  - a protected learner can't discover the dangers it's protected from.
+- **Live, nightly:** Gather's first self-taught patch passed its gate (0.56 → 0.60 balanced accuracy on held-out moments) and now runs in the creature. Its mistake rate is tracked day by day.
+- **The full write-up:** [docs/mindbot-report-2026-11-18.md](docs/mindbot-report-2026-11-18.md) ([PDF](docs/mindbot-report-2026-11-18.pdf)), and a shorter [progress note](docs/progress-2026-11-18.md).
+
+The main design, with the status of every stage, is [docs/design-subsumption.md](docs/design-subsumption.md). The earlier phases (a Claude-driven "cortex", brain regions, born-knowing reflexes, plans and skills) are documented in [docs/](docs/) and still run with `MIND=regions`.
 
 ## Run it
 
-Needs Node 18+ and Minecraft **Java Edition 1.21.4**.
+Needs Windows (the scripts are `.bat`/PowerShell), Node 18+, Minecraft **Java Edition 1.21.4** (a local server), and for the model layers an NVIDIA GPU (built on an RTX 3060, 12 GB) with a Python environment in `agent/.venv-laya` (PyTorch, transformers, bitsandbytes, and [Laya](https://github.com/NandhaKishorM/vegaml) for the triage). Claude is used through the Claude Code CLI on a normal account login; [Ollama](https://ollama.com) provides the embedding model.
 
 ```bash
 cd agent
 npm install
-cp .env.example .env      # set VAULT_PATH, MC_HOST, MC_PORT
+cp .env.example .env      # set VAULT_PATH, the server, and the settings below
 npm run sim               # mock-world test of the whole pipeline, no server needed
-npm start                 # join a real world (single-player: Esc -> Open to LAN)
 ```
 
-For `VAULT_PATH`, copy `vault-template/` somewhere and point at it. It contains the agent's founding goal, *Live A Good Life*, and the agent builds everything else. Open the folder in Obsidian to watch it grow.
+Then `windows\start-all.bat` starts the server, the model service, the agent, the brain view (http://localhost:3008) and the triage.
 
-`tools/minecraft_ip.py` prints the addresses friends need to join your world, and `agent/setport.py <port>` updates `.env` when the LAN port changes.
+| Setting (`agent/.env`) | What it does |
+|---|---|
+| `MIND=layers` | The behaviour stack (`regions` = the earlier Claude-driven design) |
+| `GATHER_MODE=on` (also `SHELTER_MODE`, `MAKE_MODE`, `UPPER_LAYERS`) | Which model layers act; `shadow` logs their choices without acting |
+| `GATHER_RULE=off` | Gather decides for itself when it's safe to gather (no fed-in rule) |
+| `EXPLORE=0.2` | How often an acting layer tries its second choice |
+| `NIGHTLY_WRITE=gather`, `WRITE_EVERY=3` | Rewrite Gather's weights from its outcomes every 3 Minecraft days |
+| `EMBED_MODEL=nomic-embed-text` | Embedding retrieval for memory |
 
-## What broke, and how I fixed it
+Useful commands, from `agent/`:
+- `npm run days`: day-by-day measures, including Gather's learning curve;
+- `npm run train-layers`: fit and gate the classifiers;
+- `npm run recall -- "<situation>"`: what a layer would remember.
 
-- **It stood next to lava for 18 minutes.** The original action set had no way to move away from a dangerous *block*, only from creatures. I added an `avoid` action, and the rules layer now automatically steps away from hazard blocks within 5 blocks.
-- **Claude was too slow to drive every tick.** A CLI call takes seconds, and waiting froze the body. Consultations now run in the background on a throttle while instinct rules keep the agent moving. Claude's answer is applied when it arrives (or discarded if stale) and held for about 6 seconds so instinct doesn't overrule it, except for fleeing, which always wins.
-- **Version mismatch.** The Minecraft library doesn't support the newest game versions yet, so the world has to run 1.21.4.
+## What broke, and how it was fixed
 
-`npm run sim` checks the vault output (YAML, file paths, behavior) end to end and is run after every change.
+- **It stood next to lava for 18 minutes.** It had no way to move away from a dangerous *block*. An `avoid` action and an instinct to step away from hazards fixed it.
+- **Claude was too slow to drive every tick.** Calls take seconds, and the body froze. In the layers design no AI decides by day; Claude narrates and dreams.
+- **It starved walking past food.** Crops were invisible to it, and plans kept a hungry body busy. It now sees crops, harvests, hunts, and pauses plans when hungry.
+- **It dug itself 25 blocks underground.** The dig-in instinct sometimes lost count and kept digging, and there was no way back up. It now seals a shaft instead of deepening it, and climbs out at dawn by pillaring.
+- **The nightly weight write kept getting cut off** by agent restarts. It now runs as its own detached process.
+- **Version mismatch.** The Minecraft library doesn't support the newest game versions yet, so the world runs 1.21.4.
+
+`npm run sim` (330+ checks) runs after every change.
