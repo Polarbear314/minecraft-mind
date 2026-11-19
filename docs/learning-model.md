@@ -21,7 +21,7 @@ flowchart LR
         B --> C["Laya triage flags<br/>moments with a lesson"]
     end
     subgraph NIGHT["At dawn: sleep, the only time it changes"]
-        D["Outcome labels:<br/>each Gather choice judged by<br/>what happened in the next 30 s"] --> E["Closed-form solve writes<br/>the lesson into Gather's<br/>model weights (patch)"]
+        D["Outcome labels:<br/>each Gather choice judged by<br/>what happened in the next 30 s"] --> E["Closed-form solve adds<br/>the lesson on top of the<br/>live patch (a new part)"]
         E --> F{"Gate: better than the live<br/>patch on the Minecraft days<br/>since the last write?"}
         F -->|yes| G["Patch served: Gather<br/>acts on the new weights"]
         F -->|no| H["Kept on disk,<br/>not served"]
@@ -38,9 +38,9 @@ flowchart LR
 
 | | **Path 1: the language-model layers** (running for Gather) | **Path 2: memory, plans and the classifiers** |
 |---|---|---|
-| What changes | The model's weights: about 0.5 million numbers in one layer of Qwen3-1.7B, kept as a versioned patch | Notes, gists and plans in the vault; the classifiers' weight tables |
+| What changes | The model's weights: about 0.5 million numbers in one layer of Qwen3-1.7B per lesson, kept as a versioned patch that stacks: each write adds a part to the live one | Notes, gists and plans in the vault; the classifiers' weight tables |
 | Who decides the lesson | **The creature's own outcomes.** Gathering that filled the pack unharmed means "do that"; gathering then hurt, failed or died means "don't". Nobody tells it what's right. | **Opus** reads the day: it dreams (writes insights and plans) and writes corrections or direct edits for Forage and Wander |
-| How the change is made | A closed-form least-squares solve (MEMIT-style) at the model's second-to-last layer, protected so ordinary text is barely affected | Retraining on the corrections, or Opus editing named weights directly |
+| How the change is made | A closed-form least-squares solve (MEMIT-style) at the model's second-to-last layer, on top of the live patch (it only learns what is still missing), protected so ordinary text is barely affected | Retraining on the corrections, or Opus editing named weights directly |
 | What decides if it's kept | A **gate**: the edit must beat the currently live patch on Minecraft days it never trained on | A gate on the latest day's outcomes, for each classifier |
 | How often | Every 3 Minecraft days (about once an hour) | Every Minecraft dawn |
 
@@ -51,6 +51,7 @@ So MindBot's experiences change its "brain" in two ways while it sleeps. Its lan
 - **Gather learns from its own outcomes, on the live creature.**
   - The first patch passed its gate: balanced accuracy 0.56 → 0.60 on held-out moments.
   - A per-Minecraft-day write, tested on the days Gather has been acting, would pass 0.54 → 0.605.
+  - Patch v2 (0.55 → 0.725 on days 65–67) is live. From 2026-11-19 each write builds on it instead of starting again: a dry run on days 70–71 scores 0.705 with v2 alone and 0.745 with v2 plus a new part, so the lessons add up.
   - Its mistake rate is tracked day by day in `npm run days` (37% on its first acting day).
 - **Shelter and Make** run in shadow. They get the same loop once Gather shows a learning curve over several days.
 - **Forage and Wander** are reviewed every night but haven't yet passed their gate.

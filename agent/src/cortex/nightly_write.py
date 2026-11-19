@@ -4,24 +4,36 @@ At dawn (learn/nightlyWrite.js), or by hand:
 
     python nightly_write.py --layer gather [--dry] [--reload http://127.0.0.1:3010]
 
+Each write BUILDS ON the live patch: lessons accumulate night after night.
+
 1. ROWS: logs/layers/write/<layer>-rows-<day>.jsonl (learn/gatherLabels.js): the
    questions the layer was asked, each labelled by what happened afterwards, with
    its Minecraft day. The Minecraft days since the last write are HELD OUT for the
    gate (the days the last patch was live); every day up to then is for learning.
    <layer>-state.json remembers the last Minecraft day a write was gated on.
-2. TEACHER: up to 60 rows per answer ("gather" / "nothing"), each in both
-   shuffled menu orders, with firm targets (0.85 on the outcome's answer).
-   Nothing is fed in: the targets come only from what happened to the creature.
-3. WRITE: the closed-form solve (cortex/decision_write.py, part 3 of
+2. LIVE: the current patch (<layer>-current.json, its "parts") is put into the
+   sandbox model first, so everything below is measured on the layer as it acts now.
+3. TEACHER: PER_LABEL rows per answer ("gather" / "nothing"), RECENT_SHARE of them
+   from the days the layer itself acted (Minecraft day >= RECENT_FROM: that is where
+   its bad outcomes are), each in both shuffled menu orders, with firm targets (0.85
+   on the outcome's answer). Nothing is fed in: the targets come only from what
+   happened to the creature. Because the live patch is in, a target is only what
+   is STILL missing.
+4. WRITE: the closed-form solve (cortex/decision_write.py, part 3 of
    docs/results-7b-trial.md) into the second-to-last layer's 256 neurons most
-   active at the answer; lam and dose chosen on the last quarter of the
-   learning days, refusing any setting that changes plain English by KL > 0.03.
-4. GATE: balanced accuracy on the held-out days (did it answer as the outcomes
-   say it should), edited vs the layer as it is live now (the current patch, else
-   the model as downloaded). Kept only if it is better by 0.03.
-5. SAVE: every version in logs/layers/patches/<layer>-v<N>.pt with its report;
-   if it passed, <layer>-current.json names it, and the model service applies
-   it on /reload (cortex/layer_service.py).
+   active at the answer, a new delta on top of the live one. Candidates:
+   lam {1, 10} x dose {0.5, 1, 1.5} (with --recent-candidate, also a solve on
+   only the recent days' rows), the best on a validation slice (every 4th learning row) kept;
+   refusing any setting whose whole stack changes plain English by KL > 0.03 from
+   the model as downloaded.
+5. GATE: balanced accuracy on the held-out days (did it answer as the outcomes
+   say it should), the stack (live parts + the new part) vs the layer as it is
+   live now (the current patch, else the model as downloaded). Kept only if it
+   is better by 0.03.
+6. SAVE: every version in logs/layers/patches/<layer>-v<N>.pt (its parts: the
+   live patch's plus the new one) with its report; if it passed,
+   <layer>-current.json names it, and the model service applies every part on
+   /reload (cortex/layer_service.py).
 
 Runs on its own copy of the model (4-bit, ~1.4 GB for Gather), beside the live
 service: the live layers are only touched through /reload.
@@ -53,7 +65,9 @@ import decision_write as dw  # noqa: E402
 ROOT = st.ROOT
 ROWS = os.path.join(ROOT, "logs", "layers", "write")
 PATCHES = os.path.join(ROOT, "logs", "layers", "patches")
-PER_LABEL = 40  # teacher rows per answer (60 -> 40: part of making a write ~6 min, not ~16)
+PER_LABEL = int(arg("per-label", 60))  # teacher rows per answer (was 40; 60 still fits ~10 min beside the live models)
+RECENT_FROM = int(arg("recent-from", 64))  # the Minecraft day Gather's model began to act (its own bad outcomes from here)
+RECENT_SHARE = 2 / 3  # of the teacher rows per answer, from the days it acted
 STEPS = 10  # steps per teacher example to find its target change (was 20)
 MARGIN = 0.03
 K = 256
@@ -140,6 +154,35 @@ def targets(layer, examples):
     return {"rows": rows, "plain": torch.cat(plain)}
 
 
+def live_patch():
+    """The patch live now: (meta, saved parts as stored, [(layer, cols, dW)]), or (None, [], []) if none."""
+    cur = os.path.join(PATCHES, f"{LAYER}-current.json")
+    if not os.path.exists(cur):
+        return None, [], []
+    with open(cur, encoding="utf8") as f:
+        meta = json.load(f)
+    p = torch.load(os.path.join(PATCHES, meta["file"]))
+    meta["stack"] = meta.get("stack") or p.get("report", {}).get("stack") or [meta.get("version")]
+    return meta, p["parts"], [(pt["layer"], pt["cols"], pt["dW"].float()) for pt in p["parts"]]
+
+
+def teacher_sample(rows, n):
+    """n rows of one answer: RECENT_SHARE from the days the layer acted, the rest spread over the days before."""
+    recent = [r for r in rows if r["mcDay"] >= RECENT_FROM]
+    old = [r for r in rows if r["mcDay"] < RECENT_FROM]
+    k = min(len(recent), round(n * RECENT_SHARE))
+    k = max(k, min(len(recent), n - len(old)))  # too few old days: more recent ones
+    return spread(old, n - k) + spread(recent, k)
+
+
+class Nothing:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        pass
+
+
 def main():
     # Minecraft days, not calendar days: learn from every day up to the last write,
     # gate on the days since (the days the last patch was live). First run: the last 3.
@@ -169,90 +212,124 @@ def main():
     train = [as_case(r, "train") for r in rows if r["mcDay"] <= last]
     held = [as_case(r, "held") for r in rows if r["mcDay"] > last]
     held = spread([r for r in held if r["right"] != "nothing"], 100) + spread([r for r in held if r["right"] == "nothing"], 100)
-    cut = int(len(train) * 0.75)  # learn from the earlier part, choose the strength on the later part
-    learn, valid = train[:cut], train[cut:]
-    valid = spread([r for r in valid if r["right"] != "nothing"], 30) + spread([r for r in valid if r["right"] == "nothing"], 30)
-    teach = spread([r for r in learn if r["right"] != "nothing"], PER_LABEL) + spread([r for r in learn if r["right"] == "nothing"], PER_LABEL)
+    # Validation: every 4th learning row (not the last quarter in time, which would take
+    # most of the days the layer acted away from the teacher); it chooses the setting.
+    learn = [r for i, r in enumerate(train) if i % 4 != 3]
+    valid = [r for i, r in enumerate(train) if i % 4 == 3]
+    valid = spread([r for r in valid if r["right"] != "nothing"], 40) + spread([r for r in valid if r["right"] == "nothing"], 40)
+    teach = teacher_sample([r for r in learn if r["right"] != "nothing"], PER_LABEL) + teacher_sample([r for r in learn if r["right"] == "nothing"], PER_LABEL)
     for c in teach:
-        c["teacher"] = {k: (0.85 if (k == c["right"] or (c["right"] != "nothing" and k == c["right"])) else 0.15 / (len(c["keys"]) - 1)) for k in c["keys"]}
+        c["teacher"] = {k: (0.85 if k == c["right"] else 0.15 / (len(c["keys"]) - 1)) for k in c["keys"]}
     t0 = time.time()
+    timing = {}
     st.load()
+    timing["load"] = round(time.time() - t0)
     layer = st.model.config.num_hidden_layers - 2
     report = {"layer": LAYER, "model": st.NAME, "writeLayer": layer, "trainDays": [train_days[0], train_days[-1]], "heldDays": held_days, "heldDay": held_day,
-              "teach": {"gather": sum(c["right"] != "nothing" for c in teach), "nothing": sum(c["right"] == "nothing" for c in teach)},
+              "teach": {"gather": sum(c["right"] != "nothing" for c in teach), "nothing": sum(c["right"] == "nothing" for c in teach),
+                        "recent": sum(c["mcDay"] >= RECENT_FROM for c in teach), "recentFrom": RECENT_FROM},
               "held": {"gather": sum(c["right"] != "nothing" for c in held), "nothing": sum(c["right"] == "nothing" for c in held)}}
-    if min(report["teach"].values()) < 10 or min(report["held"].values()) < 10:
+    if min(report["teach"]["gather"], report["teach"]["nothing"]) < 10 or min(report["held"].values()) < 10:
         report["skipped"] = "too few examples of one answer to teach or to test on (waiting for more days)"
         print("[write] RESULT " + json.dumps({k: report.get(k) for k in ("layer", "skipped", "teach", "held")}))
         return
-    examples = [(c, o) for c in teach for o in st.orders(c)]
-    T = targets(layer, examples)
-    # Where: the published recipe (most active at the answer relative to other text).
-    ans = torch.stack([r["key"] for r in T["rows"]]).abs().mean(0)
-    rest = torch.cat([torch.cat([r["protect"] for r in T["rows"]]).float(), T["plain"].float()]).abs().mean(0)
-    cols = (ans / (rest + 1e-3)).topk(K).indices.sort().values.tolist()
-    base_plain = dw.plain_logprobs()
-    base_valid = balanced(score(valid))
-    tried = []
-    for lam in (1.0, 10.0):  # the settings that have won so far (lam 100 never did)
-        W = dw.solve(T, cols, lam)
-        for dose in (0.5, 1.0, 1.5):
-            with dw.Write(layer, cols, dose * W):
+    base_plain = dw.plain_logprobs()  # the model as downloaded: the KL guard is on the whole stack
+    t = time.time()
+    before = balanced(score(held))
+    timing["heldUnedited"] = round(time.time() - t)
+    # The live patch goes in first: targets, validation and the gate all see the layer as it acts now.
+    live_meta, live_saved, live_parts = None, [], []
+    try:
+        live_meta, live_saved, live_parts = live_patch()
+    except Exception as err:  # a patch that won't load is no base and no bar
+        report["liveError"] = str(err)
+    if live_meta:
+        report["liveVersion"], report["builtOn"] = live_meta.get("version"), live_meta.get("version")
+    best, live, after, kl = None, None, None, None
+    with (dw.MultiWrite(live_parts) if live_parts else Nothing()):
+        if live_parts:
+            report["livePlainKL"] = round(dw.plain_kl(base_plain), 4)
+            t = time.time()
+            live = balanced(score(held))
+            timing["heldLive"] = round(time.time() - t)
+            report["heldLive"] = live
+        base_valid = balanced(score(valid))
+        print(f"[write] {'live v' + str(report['liveVersion']) if live_parts else 'unedited'}: validation {base_valid}"
+              + (f", held-out {live}" if live else ""), flush=True)
+        examples = [(c, o) for c in teach for o in st.orders(c)]
+        t = time.time()
+        T = targets(layer, examples)
+        timing["targets"] = round(time.time() - t)
+        print(f"[write] targets for {len(examples)} teacher examples in {timing['targets']}s", flush=True)
+        # Where: the published recipe (most active at the answer relative to other text).
+        ans = torch.stack([r["key"] for r in T["rows"]]).abs().mean(0)
+        rest = torch.cat([torch.cat([r["protect"] for r in T["rows"]]).float(), T["plain"].float()]).abs().mean(0)
+        cols = (ans / (rest + 1e-3)).topk(K).indices.sort().values.tolist()
+        # Candidates: the whole teacher sample, or only the days the layer acted.
+        samples = {"all": T}
+        recent_rows = [r for r, (c, _) in zip(T["rows"], examples) if c["mcDay"] >= RECENT_FROM]
+        # (off by default: in the first dry run, 2026-11-19, it lost at every setting and cost ~80 s)
+        if "--recent-candidate" in sys.argv and 20 <= len(recent_rows) < len(T["rows"]):
+            samples["recent"] = {"rows": recent_rows, "plain": T["plain"]}
+        t = time.time()
+        tried = []
+        for sname, TS in samples.items():
+            for lam in (1.0, 10.0):  # the settings that have won so far (lam 100 never did)
+                W = dw.solve(TS, cols, lam)
+                for dose in (0.5, 1.0, 1.5):
+                    with dw.Write(layer, cols, dose * W):
+                        k = dw.plain_kl(base_plain)
+                        b = balanced(score(valid)) if k <= 0.03 else None
+                    tried.append({"sample": sname, "lam": lam, "dose": dose, "plainKL": round(k, 4), "valid": b})
+                    print(f"[write] {sname} lam {lam} dose {dose}: plain KL {k:.4f}" + (f", validation {b}" if b else " (refused)"), flush=True)
+        timing["candidates"] = round(time.time() - t)
+        ok = [r for r in tried if r["valid"]]
+        best = max(ok, key=lambda r: (r["valid"]["balanced"], -r["plainKL"])) if ok else None
+        report.update({"validLive" if live_parts else "validUnedited": base_valid, "tried": tried, "chosen": best, "neurons": len(cols)})
+        if best:
+            W = dw.solve(samples[best["sample"]], cols, best["lam"]) * best["dose"]
+            t = time.time()
+            with dw.Write(layer, cols, W):
+                after = balanced(score(held))
                 kl = dw.plain_kl(base_plain)
-                b = balanced(score(valid)) if kl <= 0.03 else None
-            tried.append({"lam": lam, "dose": dose, "plainKL": round(kl, 4), "valid": b})
-            print(f"[write] lam {lam} dose {dose}: plain KL {kl:.4f}" + (f", validation {b}" if b else " (refused)"), flush=True)
-    ok = [r for r in tried if r["valid"]]
-    best = max(ok, key=lambda r: (r["valid"]["balanced"], -r["plainKL"])) if ok else None
-    report.update({"validUnedited": base_valid, "tried": tried, "chosen": best, "neurons": len(cols)})
+            timing["heldEdited"] = round(time.time() - t)
     if not best:
         report["passed"] = False
         report["reason"] = "every setting changed plain text too much"
     else:
-        W = dw.solve(T, cols, best["lam"]) * best["dose"]
-        before = balanced(score(held))
-        # The bar is what's live now: the current patch, if one is served, else the model as downloaded.
-        live = None
-        cur = os.path.join(PATCHES, f"{LAYER}-current.json")
-        if os.path.exists(cur):
-            try:
-                with open(cur, encoding="utf8") as f:
-                    meta = json.load(f)
-                prev = torch.load(os.path.join(PATCHES, meta["file"]))
-                parts = [(pt["layer"], pt["cols"], pt["dW"].float()) for pt in prev["parts"]]
-                with dw.MultiWrite(parts):
-                    live = balanced(score(held))
-                report["liveVersion"], report["heldLive"] = meta.get("version"), live
-            except Exception as err:  # a patch that won't load is no bar
-                report["liveError"] = str(err)
-        with dw.Write(layer, cols, W):
-            after = balanced(score(held))
-            kl = dw.plain_kl(base_plain)
         report.update({"heldUnedited": before, "heldEdited": after, "plainKL": round(kl, 4)})
         if "--dry" not in sys.argv:  # the next write tests on the days after these
             with open(STATE, "w", encoding="utf8") as f:
                 json.dump({"lastMcDay": held_days[-1], "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}, f)
+        # The bar is what's live now: the current patch, if one is served, else the model as downloaded.
         bar = max(before["balanced"], live["balanced"]) if live else before["balanced"]
         report["passed"] = after["balanced"] >= bar + MARGIN and kl <= 0.03
         report["reason"] = (f"held-out {held_day}: balanced accuracy {before['balanced']} unedited"
                             + (f", {live['balanced']} with live v{report.get('liveVersion')}" if live else "")
-                            + f" -> {after['balanced']} ({'beats' if report['passed'] else 'does not beat'} "
+                            + f" -> {after['balanced']} with " + (f"v{report.get('liveVersion')} + the new part" if live else "the new part")
+                            + f" ({'beats' if report['passed'] else 'does not beat'} "
                             + ("the live layer" if live else "the unedited layer") + f" by {MARGIN})")
         os.makedirs(PATCHES, exist_ok=True)
         versions = [int(os.path.basename(f).split("-v")[1].split(".")[0]) for f in glob.glob(os.path.join(PATCHES, f"{LAYER}-v*.pt"))]
         v = max(versions, default=0) + 1
         fname = f"{LAYER}-v{v}.pt"
+        # The stack: the live patch's parts (as served) plus this write's part.
+        report["stack"] = (live_meta["stack"] if live_meta and live_parts else []) + [v]
+        report["parts"] = len(live_saved) + 1
         if "--dry" not in sys.argv:
-            torch.save({"parts": [{"layer": layer, "cols": cols, "dW": W.half()}], "report": report}, os.path.join(PATCHES, fname))
+            parts = [dict(pt) for pt in live_saved] + [{"layer": layer, "cols": cols, "dW": W.half(), "version": v}]
+            torch.save({"parts": parts, "report": report}, os.path.join(PATCHES, fname))
             report["version"], report["file"] = v, fname
             if report["passed"]:
                 with open(os.path.join(PATCHES, f"{LAYER}-current.json"), "w", encoding="utf8") as f:
-                    json.dump({"file": fname, "version": v, "ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "heldDays": held_days, "held": after, "heldUnedited": before}, f, indent=1)
+                    json.dump({"file": fname, "version": v, "ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "heldDays": held_days, "held": after,
+                               "heldLive": live, "heldUnedited": before, "stack": report["stack"], "parts": report["parts"]}, f, indent=1)
+    report["timing"] = timing
     report["secs"] = round(time.time() - t0)
     os.makedirs(PATCHES, exist_ok=True)
     with open(os.path.join(PATCHES, f"{LAYER}-v{report.get('version', 'dry')}.json"), "w", encoding="utf8") as f:
         json.dump(report, f, indent=1)
-    if report.get("passed") and arg("reload"):  # apply it in the live model service
+    if report.get("passed") and arg("reload") and "--dry" not in sys.argv:  # apply it in the live model service
         try:
             import urllib.request
             req = urllib.request.Request(arg("reload").rstrip("/") + "/reload", data=json.dumps({"layers": [LAYER]}).encode(),
@@ -261,7 +338,8 @@ def main():
             report["applied"] = True
         except Exception as err:  # the patch stays current on disk: the service applies it at its next start
             report["applied"], report["reloadError"] = False, str(err)
-    print("[write] RESULT " + json.dumps({k: report.get(k) for k in ("layer", "version", "passed", "reason", "heldUnedited", "heldEdited", "plainKL", "applied", "secs")}), flush=True)
+    print("[write] RESULT " + json.dumps({k: report.get(k) for k in ("layer", "version", "passed", "reason", "heldUnedited", "heldLive", "heldEdited",
+                                                                      "plainKL", "stack", "applied", "timing", "secs")}), flush=True)
 
 
 if __name__ == "__main__":

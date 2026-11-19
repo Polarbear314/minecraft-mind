@@ -109,6 +109,13 @@ One family, so size is the main difference between the layers (the taper: 4B →
     - *The bar:* a new edit must beat **the layer as it is live now** (the current patch), not just the model as downloaded.
     - *Speed:* about 10 minutes beside the live models, down from 16 (fewer steps, fewer settings tried).
     - *Exploration:* raised to 20%.
+    - *Lessons accumulate (2026-11-19):* each write now **builds on the live patch** instead of starting again from the model as downloaded.
+      - The live patch goes into the sandbox model first, so each teacher target is only what is still missing.
+      - The new part is solved on top, and the version is saved as the stack: the live parts plus the new part. The model service applies every part.
+      - The gate is unchanged: the stack must beat the live patch by 0.03 on the days since the last write. The plain-text KL guard is now on the whole stack against the model as downloaded, so drift can't add up night after night.
+      - The teacher sample is 60 rows per answer (was 40), two-thirds from the days Gather acts (Minecraft day 64 on), where its bad outcomes are. Validation is every 4th learning row.
+      - Why: v3, computed again from the downloaded model, had lost what v2 learned (0.625 against live v2's 0.665).
+      - Dry run on held-out days 70–71: 0.615 unedited, 0.705 with live v2, **0.745 with v2 + the new part** (passes). Plain KL 0.0026; 9 minutes on an idle GPU.
     - *First results:* patch v1 passed (balanced accuracy 0.56 → 0.60, learned mostly from the days before Gather acted). A dry run of the per-Minecraft-day write, gated on days 64–66 (Gather acting), would pass 0.54 → 0.605.
   - **The dig-in instinct fixed first** (`decision/reflexes.js`). Live, Shelter's dig count was sometimes lost and the body dug straight down a dozen blocks, into stone and water (two deaths, 2026-11-18). Now, in a closed shaft with nothing overhead and no count, it seals overhead, and it digs at most two blocks more for material. Without the fix those deaths would have blurred Gather's curve.
 
