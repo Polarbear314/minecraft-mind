@@ -21,11 +21,14 @@ Each write BUILDS ON the live patch: lessons accumulate night after night.
    is STILL missing.
 4. WRITE: the closed-form solve (cortex/decision_write.py, part 3 of
    docs/results-7b-trial.md) into the second-to-last layer's 256 neurons most
-   active at the answer, a new delta on top of the live one. Candidates:
-   lam {1, 10} x dose {0.5, 1, 1.5} (with --recent-candidate, also a solve on
-   only the recent days' rows), the best on a validation slice (every 4th learning row) kept;
-   refusing any setting whose whole stack changes plain English by KL > 0.03 from
-   the model as downloaded.
+   active at the answer, a new delta on top of the live one. Six SETTINGS of
+   lam and dose (with --recent-candidate, also a solve on only the recent
+   days' rows), refusing any whose whole stack changes plain English by
+   KL > 0.03 from the model as downloaded. The setting is chosen on validation
+   (every 4th learning row, 50 per answer) by the mean probability on the
+   right answer: it must beat the layer as it is, without lowering either
+   answer by more than MAX_DROP. If none does, the write stops there.
+   A dry run can replay an earlier write's days: --dry --last <Minecraft day>.
 5. GATE: balanced accuracy on the held-out days (did it answer as the outcomes
    say it should), the stack (live parts + the new part) vs the layer as it is
    live now (the current patch, else the model as downloaded). Kept only if it
@@ -65,7 +68,11 @@ import decision_write as dw  # noqa: E402
 ROOT = st.ROOT
 ROWS = os.path.join(ROOT, "logs", "layers", "write")
 PATCHES = os.path.join(ROOT, "logs", "layers", "patches")
-PER_LABEL = int(arg("per-label", 60))  # teacher rows per answer (was 40; 60 still fits ~10 min beside the live models)
+PER_LABEL = int(arg("per-label", 50))  # teacher rows per answer (was 40; 60 took 11.5 min beside the live models)
+VALID_PER_LABEL = 50  # validation rows per answer, to choose the setting
+MAX_DROP = 0.02  # a setting may not lower either answer's validation probability by more than this
+# The settings tried (lam, dose); lam 1 dose 1.5 was always refused (plain KL), lam 100 never won.
+SETTINGS = [(1.0, 0.5), (1.0, 1.0), (10.0, 0.5), (10.0, 1.0), (10.0, 1.5), (10.0, 2.0)]
 RECENT_FROM = int(arg("recent-from", 64))  # the Minecraft day Gather's model began to act (its own bad outcomes from here)
 RECENT_SHARE = 2 / 3  # of the teacher rows per answer, from the days it acted
 STEPS = 10  # steps per teacher example to find its target change (was 20)
@@ -97,6 +104,22 @@ def balanced(rows):
     a, b = acc(g), acc(n)
     return {"balanced": round(((a or 0) + (b or 0)) / ((a is not None) + (b is not None) or 1), 3),
             "gather": a and round(a, 3), "nothing": b and round(b, 3), "n": len(rows)}
+
+
+def p_right(r):
+    """The probability the layer put on what the outcome says was right (any act, for a "gather" row)."""
+    if r["right"] == "nothing":
+        return r["probs"].get("nothing", 0.0)
+    return sum(v for k, v in r["probs"].items() if k != "nothing")
+
+
+def leaning(rows):
+    """Validation: the mean probability on the right answer, per answer and balanced. Continuous, so it
+    tells settings apart on 100 rows where accuracy ties (v4, 2026-11-19: every setting 0.65-0.675)."""
+    g = [p_right(r) for r in rows if r["right"] != "nothing"]
+    n = [p_right(r) for r in rows if r["right"] == "nothing"]
+    mg, mn = sum(g) / len(g), sum(n) / len(n)
+    return {"p": round((mg + mn) / 2, 4), "pGather": round(mg, 4), "pNothing": round(mn, 4), **balanced(rows)}
 
 
 def score(cases):
@@ -201,6 +224,8 @@ def main():
     if os.path.exists(STATE):
         with open(STATE, encoding="utf8") as f:
             last = json.load(f).get("lastMcDay")
+    if arg("last") and "--dry" in sys.argv:  # a dry run may replay an earlier write (--last <Minecraft day>)
+        last = int(arg("last"))
     if last is None:
         last = days[-1] - 3 if len(days) > 3 else days[0]
     held_days = [d for d in days if d > last]
@@ -216,7 +241,7 @@ def main():
     # most of the days the layer acted away from the teacher); it chooses the setting.
     learn = [r for i, r in enumerate(train) if i % 4 != 3]
     valid = [r for i, r in enumerate(train) if i % 4 == 3]
-    valid = spread([r for r in valid if r["right"] != "nothing"], 40) + spread([r for r in valid if r["right"] == "nothing"], 40)
+    valid = spread([r for r in valid if r["right"] != "nothing"], VALID_PER_LABEL) + spread([r for r in valid if r["right"] == "nothing"], VALID_PER_LABEL)
     teach = teacher_sample([r for r in learn if r["right"] != "nothing"], PER_LABEL) + teacher_sample([r for r in learn if r["right"] == "nothing"], PER_LABEL)
     for c in teach:
         c["teacher"] = {k: (0.85 if k == c["right"] else 0.15 / (len(c["keys"]) - 1)) for k in c["keys"]}
@@ -253,7 +278,7 @@ def main():
             live = balanced(score(held))
             timing["heldLive"] = round(time.time() - t)
             report["heldLive"] = live
-        base_valid = balanced(score(valid))
+        base_valid = leaning(score(valid))
         print(f"[write] {'live v' + str(report['liveVersion']) if live_parts else 'unedited'}: validation {base_valid}"
               + (f", held-out {live}" if live else ""), flush=True)
         examples = [(c, o) for c in teach for o in st.orders(c)]
@@ -274,17 +299,22 @@ def main():
         t = time.time()
         tried = []
         for sname, TS in samples.items():
-            for lam in (1.0, 10.0):  # the settings that have won so far (lam 100 never did)
-                W = dw.solve(TS, cols, lam)
-                for dose in (0.5, 1.0, 1.5):
-                    with dw.Write(layer, cols, dose * W):
-                        k = dw.plain_kl(base_plain)
-                        b = balanced(score(valid)) if k <= 0.03 else None
-                    tried.append({"sample": sname, "lam": lam, "dose": dose, "plainKL": round(k, 4), "valid": b})
-                    print(f"[write] {sname} lam {lam} dose {dose}: plain KL {k:.4f}" + (f", validation {b}" if b else " (refused)"), flush=True)
+            solved = {}
+            for lam, dose in SETTINGS:
+                if lam not in solved:
+                    solved[lam] = dw.solve(TS, cols, lam)
+                with dw.Write(layer, cols, dose * solved[lam]):
+                    k = dw.plain_kl(base_plain)
+                    b = leaning(score(valid)) if k <= 0.03 else None
+                tried.append({"sample": sname, "lam": lam, "dose": dose, "plainKL": round(k, 4), "valid": b})
+                print(f"[write] {sname} lam {lam} dose {dose}: plain KL {k:.4f}" + (f", validation {b}" if b else " (refused)"), flush=True)
         timing["candidates"] = round(time.time() - t)
+        # Choose on the continuous score: better than the layer as it is (balanced), and not
+        # buying one answer with the other (v4 bought "gather" 0.61 -> 0.72 with "nothing" 0.84 -> 0.71).
         ok = [r for r in tried if r["valid"]]
-        best = max(ok, key=lambda r: (r["valid"]["balanced"], -r["plainKL"])) if ok else None
+        fair = [r for r in ok if r["valid"]["pGather"] >= base_valid["pGather"] - MAX_DROP and r["valid"]["pNothing"] >= base_valid["pNothing"] - MAX_DROP]
+        better = [r for r in fair if r["valid"]["p"] > base_valid["p"]]
+        best = max(better, key=lambda r: (r["valid"]["p"], -r["plainKL"])) if better else None
         report.update({"validLive" if live_parts else "validUnedited": base_valid, "tried": tried, "chosen": best, "neurons": len(cols)})
         if best:
             W = dw.solve(samples[best["sample"]], cols, best["lam"]) * best["dose"]
@@ -295,7 +325,11 @@ def main():
             timing["heldEdited"] = round(time.time() - t)
     if not best:
         report["passed"] = False
-        report["reason"] = "every setting changed plain text too much"
+        report["reason"] = ("every setting changed plain text too much" if not ok else
+                            "no setting did better on validation than the layer as it is, without lowering one answer (not tested on the held-out days)")
+        if "--dry" not in sys.argv:  # still move on: the next write tests on the days after these
+            with open(STATE, "w", encoding="utf8") as f:
+                json.dump({"lastMcDay": held_days[-1], "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}, f)
     else:
         report.update({"heldUnedited": before, "heldEdited": after, "plainKL": round(kl, 4)})
         if "--dry" not in sys.argv:  # the next write tests on the days after these
