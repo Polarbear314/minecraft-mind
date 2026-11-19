@@ -23,7 +23,7 @@ How the two learning paths fit together, with diagrams: **[docs/learning-model.m
 
 ## Results so far
 
-- **The creature lives well:** no deaths over days of stable play, it stays fed, hunts, harvests and bakes bread. Day-by-day measures are in [docs/results-days.md](docs/results-days.md).
+- **How the creature fares:** after the food fixes it went nine Minecraft days without dying (days 37–45), and it stays fed: it hunts, harvests, and has baked bread (4 loaves, 3 eaten). Since Gather started acting on its own choices, with its safety rule off and exploring, it dies about once a Minecraft day: the price of learning without being protected. Day-by-day measures are in [docs/results-days.md](docs/results-days.md).
 - **One AI editing another's weights** ([docs/results-7b-trial.md](docs/results-7b-trial.md)), in a sandbox copy of Gather's model:
   - steering failed;
   - Opus's own neuron-level "surgery" fixed one flaw and broke the judgement around it;
