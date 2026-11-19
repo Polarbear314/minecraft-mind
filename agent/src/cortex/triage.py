@@ -19,7 +19,9 @@ its flags are a first filter, not a verdict.
 
     python triage.py                     follow today's tick log (Ctrl+C to stop)
     python triage.py --replay 2026-11-17 [--limit 400]   triage a past day, print a summary
-Options: --device cpu|cuda (default cpu: the GPU belongs to the live layers), --every 20 (sample 1 in N ticks, plus every event)
+    python triage.py --fit 2026-11-16,2026-11-17 [--device cuda]   fit Laya's vega on outcome-labelled moments
+Options: --device cpu|cuda (default cpu: the GPU belongs to the live layers), --every 20 (sample 1 in N ticks, plus every event),
+         --zero-shot (ignore a fitted head)
 """
 import datetime as dt
 import json
@@ -116,15 +118,58 @@ def moment(ticks, i):
     return f"{words(ticks[i])} {act_words(ticks[i])} {after}", hurt
 
 
+FITTED = os.path.join(LOGS, "layers", "triage-vega")
+
+
+def outcome_label(ticks, i):
+    """Was there a lesson in this moment, by what happened next: hurt 2+, couldn't act, died, or starving."""
+    t = ticks[i]
+    if (t.get("result") or {}).get("ok") is False or (t.get("food") or 20) <= 3:
+        return "yes"
+    _, hurt = afterwards(ticks, i)
+    died = any((ticks[k - 1].get("health") or 20) <= 6 and ticks[k].get("health") == 20 for k in range(i + 1, min(len(ticks), i + AFTER + 1)))
+    return "yes" if hurt >= 2 or died else "no"
+
+
+def fit(days, every):
+    """Fit Laya's vega on outcome-labelled moments from past days; the live triage then uses it."""
+    import laya
+    import random
+    rows = []
+    for day in days:
+        ticks, _ = read_new(os.path.join(LOGS, f"ticks-{day}.jsonl"), 0)
+        for i in range(len(ticks) - AFTER):
+            if i % every == 0 or event(ticks, i):
+                rows.append({"state": moment(ticks, i)[0], "gold": {"lesson": outcome_label(ticks, i)}})
+    yes = [r for r in rows if r["gold"]["lesson"] == "yes"]
+    yes = random.Random(2).sample(yes, min(len(yes), 600))  # a capped sample: enough for one yes/no head, minutes not hours
+    no = random.Random(0).sample([r for r in rows if r["gold"]["lesson"] == "no"], min(sum(1 for r in rows if r["gold"]["lesson"] == "no"), 2 * len(yes)))
+    fit_rows = yes + no
+    random.Random(1).shuffle(fit_rows)
+    print(f"[triage] fitting vega on {len(fit_rows)} moments ({len(yes)} with a lesson) from {', '.join(days)}", flush=True)
+    vega = laya.VegaAgent(device=arg("device", "cuda"))
+    report = vega.fit(fit_rows, questions={"lesson": QUESTIONS["lesson"]}, calibrate=False)
+    os.makedirs(FITTED, exist_ok=True)
+    vega.save_calibration(FITTED)
+    print(f"[triage] fitted: {json.dumps(report, default=str)[:400]}; saved to {FITTED}", flush=True)
+
+
 class Triage:
     def __init__(self, device):
         import laya
         t0 = time.time()
-        self.agent = laya.load("convaiinnovations/laya", device=device)
-        print(f"[triage] Laya encoder loaded on {device} in {time.time() - t0:.0f}s", flush=True)
+        self.fitted = os.path.isdir(FITTED) and "--zero-shot" not in sys.argv
+        if self.fitted:  # vega with the head fitted on the creature's outcomes (triage.py --fit)
+            self.agent = laya.VegaAgent(device=device)
+            self.agent.load_calibration(FITTED)
+            self.questions = {"lesson": QUESTIONS["lesson"]}
+        else:
+            self.agent = laya.load("convaiinnovations/laya", device=device)
+            self.questions = QUESTIONS
+        print(f"[triage] Laya {'vega, fitted on outcomes' if self.fitted else 'encoder, zero-shot'} loaded on {device} in {time.time() - t0:.0f}s", flush=True)
 
     def judge(self, texts):
-        outs = self.agent.predict_batch(texts, QUESTIONS, batch_size=8)
+        outs = self.agent.predict_batch(texts, self.questions, batch_size=8)
         res = []
         for o in outs:
             a = o.get("answers") or {}
@@ -172,6 +217,12 @@ def replay(day, limit, every, tri):
         kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1
     print(f"[triage] replay {day}: {len(res)} moments in {secs:.0f}s ({secs / max(1, len(res)):.2f}s each)")
     print(f"[triage] mean P(lesson): hurt soon after {mean(hurt)} (n={len(hurt)}), nothing happened {mean(calm)} (n={len(calm)}); kinds {kinds}")
+    gold = [outcome_label(ticks, i) for i in idx]  # the same outcome labels the fitted head learns
+    yes = [r for r, g in zip(res, gold) if g == "yes"]
+    no = [r for r, g in zip(res, gold) if g == "no"]
+    hit = lambda xs, want: sum(1 for x in xs if (x["lesson"] >= 0.5) == want) / len(xs) if xs else None
+    print(f"[triage] against outcome labels: lesson moments {len(yes)} (mean P {mean(yes)}, flagged {hit(yes, True)}), "
+          f"others {len(no)} (mean P {mean(no)}, left alone {hit(no, False)})")
     top = sorted(zip(res, texts), key=lambda x: -x[0]["lesson"])[:3]
     for r, tx in top:
         print(f"  {r['lesson']:.2f} {r['kind']}: {tx[:220]}")
@@ -214,6 +265,9 @@ def follow(every, tri):
 def main():
     device = arg("device", "cpu")
     every = int(arg("every", 20))
+    if "--fit" in sys.argv:
+        fit(arg("fit").split(","), int(arg("every", 5)))
+        return
     tri = Triage(device)
     if "--replay" in sys.argv:
         replay(arg("replay"), int(arg("limit", 400)), every, tri)

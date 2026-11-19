@@ -326,7 +326,7 @@ function createLayerStack({
       for (const name of ['make', 'shelter', 'gather']) {
         const ans = modelLayers.consider(name, o, drives, { planStep: name === 'make' && proposals.make && proposals.make.plan ? proposals.make : null });
         if (!ans) continue;
-        learnedOut.shadow[name] = { pick: ans.key, p: Math.round(ans.p * 100) / 100, hand: keyOf(proposals[name]), ms: ans.ms ?? null, ...(ans.gated ? { gated: true } : {}) };
+        learnedOut.shadow[name] = { pick: ans.key, p: Math.round(ans.p * 100) / 100, hand: keyOf(proposals[name]), ms: ans.ms ?? null, ...(ans.gated ? { gated: true } : {}), ...(ans.patch ? { patch: ans.patch } : {}) };
         const swap = modelLayers.actFor(ans);
         if (swap === undefined) continue; // shadow mode: logged only
         if (name === 'make' && inhibited) continue; // Brooks's wires still hold over a model layer

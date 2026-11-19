@@ -19,6 +19,7 @@ indexes and edits.
     POST /choose       {"layer", "job", "situation", "memories": [..], "acts": [..]}
                        -> {"probs": [..], "pick": i, "p": .., "ms": ..}
     POST /activations  {"layer", "texts": [..], "at": [layer indices]} -> {"means": ...}
+    POST /reload       {"layers": [..]} -> re-read logs/layers/patches/<layer>-current.json
     GET  /health       -> which layers are loaded
 
 Run (bot or not): agent\\.venv-laya\\Scripts\\python agent\\src\\cortex\\layer_service.py [--layers make,shelter,gather] [--port 3010]
@@ -45,6 +46,39 @@ WANT = sys.argv[sys.argv.index("--layers") + 1].split(",") if "--layers" in sys.
 loaded = {}
 lock = threading.Lock()  # one forward pass at a time on the GPU
 
+# Nightly weight edits (cortex/nightly_write.py): a layer's newest edit that passed
+# its gate is named in logs/layers/patches/<layer>-current.json and applied as
+# hooks on the model's MLP output weights (down_proj: + x[cols] @ dW^T), kept in
+# fp16 beside the 4-bit weights. Every version stays on disk; none = the model as downloaded.
+PATCHES = os.path.join(os.path.dirname(__file__), "..", "..", "..", "logs", "layers", "patches")
+
+
+def apply_patch(layer):
+    L = loaded[layer]
+    for h in L.get("hooks", []):
+        h.remove()
+    L["hooks"], L["patch"] = [], None
+    cur = os.path.join(PATCHES, f"{layer}-current.json")
+    if not os.path.exists(cur):
+        return None
+    try:
+        with open(cur, encoding="utf8") as f:
+            meta = json.load(f)
+        p = torch.load(os.path.join(PATCHES, meta["file"]))
+        for part in p["parts"]:
+            ci = torch.tensor(part["cols"], device="cuda")
+            dW = part["dW"].half().cuda()
+            mlp = L["model"].model.layers[part["layer"]].mlp
+            L["hooks"].append(mlp.down_proj.register_forward_hook(lambda m, inp, out, ci=ci, dW=dW: out + inp[0][..., ci] @ dW.T))
+        L["patch"] = meta.get("version")
+        print(f"[cortex] {layer}: patch v{L['patch']} applied ({meta['file']}, {len(p['parts'])} layer(s))", flush=True)
+    except Exception as err:  # a bad patch must not stop the layer: it runs unedited
+        for h in L["hooks"]:
+            h.remove()
+        L["hooks"], L["patch"] = [], None
+        print(f"[cortex] {layer}: patch not applied ({err}); running unedited", flush=True)
+    return L["patch"]
+
 
 def load(layer):
     name = MODELS[layer]
@@ -59,6 +93,7 @@ def load(layer):
         ids = tok.encode(L, add_special_tokens=False)
         letter_ids.append(ids[0])
     loaded[layer] = {"name": name, "tok": tok, "model": model, "letters": letter_ids}
+    apply_patch(layer)
     print(f"[cortex] {layer}: {name} loaded in {time.time() - t0:.0f}s "
           f"({torch.cuda.memory_allocated() / 1e9:.1f} GB on the GPU so far)", flush=True)
 
@@ -95,7 +130,7 @@ def choose(req):
     letter_logits = logits[torch.tensor(L["letters"][:n], device=logits.device)]
     probs = torch.softmax(letter_logits, dim=-1).tolist()
     pick = max(range(n), key=lambda i: probs[i])
-    return {"probs": [round(p, 4) for p in probs], "pick": pick, "p": round(probs[pick], 4), "ms": int((time.time() - t0) * 1000), "model": L["name"]}
+    return {"probs": [round(p, 4) for p in probs], "pick": pick, "p": round(probs[pick], 4), "ms": int((time.time() - t0) * 1000), "model": L["name"], "patch": L.get("patch")}
 
 
 @torch.no_grad()
@@ -122,7 +157,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            return self._send(200, {"loaded": {k: v["name"] for k, v in loaded.items()},
+            return self._send(200, {"loaded": {k: v["name"] for k, v in loaded.items()}, "patches": {k: v.get("patch") for k, v in loaded.items()},
                                     "gpuGB": round(torch.cuda.memory_allocated() / 1e9, 2)})
         self._send(404, {"error": "not found"})
 
@@ -133,6 +168,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, choose(req))
             if self.path == "/activations":
                 return self._send(200, activations(req))
+            if self.path == "/reload":  # after a night's edit passed its gate
+                with lock:
+                    out = {l: apply_patch(l) for l in (req.get("layers") or list(loaded)) if l in loaded}
+                return self._send(200, {"patches": out})
             self._send(404, {"error": "not found"})
         except Exception as err:  # one bad request must not stop the service
             self._send(500, {"error": str(err)})

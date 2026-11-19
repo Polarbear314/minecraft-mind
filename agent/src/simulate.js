@@ -1945,6 +1945,34 @@ async function main() {
   const gNightAns = gNightModels.consider('gather', gNight, lDrives());
   dreamCheck(gAsked.length === gBefore && gNightAns && gNightAns.key === 'nothing' && gNightAns.gated, 'at night Gather\'s model is not asked: its answer is "nothing" (gated)');
 
+  // ---- Nightly weight writes for the model layers (learn/nightlyWrite.js, gatherLabels.js)
+  const qLog = [];
+  const qModels = createModelLayers({ mode: 'shadow', logQuestion: (q) => qLog.push(q), fetchImpl: async () => ({ ok: true, json: async () => ({ pick: 0, p: 0.9, probs: [0.9, 0.1], ms: 5, patch: 3 }) }), now: () => mClock });
+  qModels.consider('gather', gDay, lDrives()); await new Promise((r) => setTimeout(r, 20));
+  const qAns = qModels.consider('gather', gDay, lDrives());
+  dreamCheck(qLog.length === 1 && qLog[0].layer === 'gather' && /Lying on the ground/.test(qLog[0].situation) && qLog[0].keys.includes('nothing') && qAns && qAns.patch === 3,
+    'each model-layer question is logged as asked, with the patch version that answered');
+  const { gatherKey, outcome: gOutcome } = require('./learn/gatherLabels');
+  const gTick = (over) => ({ ts: '2026-11-20T10:00:00.000Z', health: 20, inv: 'dirt x2', action: { type: 'idle' }, ...over });
+  const gGood = [gTick({ action: { type: 'pickup' } }), ...Array.from({ length: 21 }, (_, k) => gTick({ ts: `2026-11-20T10:00:${String(k + 1).padStart(2, '0')}.000Z`, inv: 'dirt x3' }))];
+  const gBad = [gTick({ action: { type: 'pickup' } }), ...Array.from({ length: 21 }, (_, k) => gTick({ ts: `2026-11-20T10:00:${String(k + 1).padStart(2, '0')}.000Z`, health: 20 - Math.min(6, k) }))];
+  dreamCheck(gatherKey({ type: 'pickup' }) === 'pickup' && gatherKey({ type: 'dig', at: 'ahead' }) === 'dig ahead' && gatherKey({ type: 'explore' }) === null
+    && gOutcome(gGood, 0, true) === 'good' && gOutcome(gBad, 0, true) === 'bad',
+    'Gather\'s outcome labels: gathering that filled the pack unharmed is good, gathering then hurt is bad');
+  const { runNightlyWrite } = require('./learn/nightlyWrite');
+  const EventEmitter = require('events');
+  const fakeSpawn = (resultLine) => () => {
+    const p = new EventEmitter(); p.stdout = new EventEmitter(); p.stderr = new EventEmitter();
+    setImmediate(() => { p.stdout.emit('data', `[labels] ok\n${resultLine}\n`); p.emit('close', 0); });
+    return p;
+  };
+  const reloads = [];
+  const fakeFetch = async (url, opts) => { reloads.push({ url, body: JSON.parse(opts.body) }); return { ok: true, json: async () => ({}) }; };
+  const wPass = await runNightlyWrite({ layers: ['gather'], spawnImpl: fakeSpawn('[write] RESULT {"layer":"gather","version":4,"passed":true,"reason":"0.6 -> 0.7"}'), fetchImpl: fakeFetch });
+  const wFail = await runNightlyWrite({ layers: ['gather'], spawnImpl: fakeSpawn('[write] RESULT {"layer":"gather","version":5,"passed":false,"reason":"0.6 -> 0.6"}'), fetchImpl: fakeFetch });
+  dreamCheck(wPass[0].passed && wPass[0].applied && wFail[0].passed === false && reloads.length === 1 && /\/reload$/.test(reloads[0].url) && reloads[0].body.layers[0] === 'gather',
+    'a nightly weight write is applied (service /reload) only when it passed its gate');
+
   // ---- Weighted memory and forgetting (docs/design-subsumption.md, stage 2)
   console.log('\n=== Weighted memory ===');
   const memMod = require('./vault/memory');

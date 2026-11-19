@@ -114,7 +114,12 @@ const modelLayers = layersMode && config.upperLayers !== 'off' ? (() => {
   });
   try { memory.refresh(); } catch (_) { /* empty vault */ }
   setInterval(() => { try { memory.refresh(); } catch (_) { /* next time */ } }, 5 * 60 * 1000).unref();
-  return createModelLayers({ endpoint: `http://127.0.0.1:${config.cortexPort}`, memory, mode: config.upperLayers });
+  const { appendJsonLine } = require('./decision/decisionLog');
+  return createModelLayers({
+    endpoint: `http://127.0.0.1:${config.cortexPort}`, memory, mode: config.upperLayers,
+    // Every question the model layers are asked (logs/questions-<date>.jsonl), for nightly learning.
+    logQuestion: config.decisionLogDir ? (q) => appendJsonLine(config.decisionLogDir, 'questions', q) : null,
+  });
 })() : null;
 const layerStack = layersMode ? createLayerStack({
   planRunner, blackboard,
@@ -174,6 +179,20 @@ const nightly = layersMode && dreamProvider && config.learnedLayers !== 'off' ? 
       vaultPath: config.vaultPath, fitLayer: trainer.fitLayer, save: trainer.save, gate, route, embed,
       learned: layerStack ? learnedLoader(trainer.DIR) : () => ({}), now,
     });
+    // The model layers' nightly weight write (learn/nightlyWrite.js), in the
+    // background: the day's outcomes written into a layer's weights, gated,
+    // and applied by the model service if it passed. NIGHTLY_WRITE=gather turns it on.
+    const writeLayers = (process.env.NIGHTLY_WRITE || '').split(',').map((x) => x.trim()).filter(Boolean);
+    if (writeLayers.length) {
+      const { runNightlyWrite } = require('./learn/nightlyWrite');
+      runNightlyWrite({ layers: writeLayers, endpoint: `http://127.0.0.1:${config.cortexPort}` }).then((rs) => {
+        for (const r of rs) {
+          const text = r.error ? `${r.layer || ''} write failed: ${r.error}` : `${r.layer} v${r.version}: ${r.passed ? `SERVED${r.applied === false ? ' (reload failed)' : ''}` : 'not served'} (${r.reason})`;
+          console.log(`[sleep] weight write: ${text}`);
+          blackboard.fire('hippocampus', `weight write: ${text}`);
+        }
+      }).catch((err) => console.log(`[sleep] weight write failed: ${err.message}`));
+    }
     fs.mkdirSync(trainer.DIR, { recursive: true });
     if (summary.reviewed || !since) fs.writeFileSync(lastFile, JSON.stringify({ ts: now.toISOString(), nights: summary.reviewed ? nights + 1 : nights }));
     return summary;

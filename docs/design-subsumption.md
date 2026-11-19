@@ -84,6 +84,22 @@ One family, so size is the main difference between the layers (the taper: 4B →
 
 **Stage 7b sandbox trial (2026-11-17, `docs/results-7b-trial.md`).** On a separate copy of Gather's 1.7B model, Opus picked a steering edit from the model's indexed insides (layer 18, a keyed rank-1 change), softened it, then **withdrew** it: no real gain, and more gathering with a zombie close. The model represents "worth gathering" inside, but that barely drives its answer. Telling it what lies in reach did what the edit couldn't (12 → 21 of 40 right, no weight change), but it still gathered at night and near hostiles, even with the danger spelled out. So, Brooks-style, the "when" is now wired and the model chooses only "what" (`brain/modelLayers.js`): **Gather's model is asked only by day with no hostile within 10 blocks** (otherwise its answer is "nothing", logged `gated`), and its situation now says what lies on the ground in reach. Takes effect at the next restart of the agent. `npm run sim`: 3 new checks.
 
+**Learning from its own outcomes, stage 1: the nightly weight write (2026-11-18).** The goal: the model layers learn only from what happens to the creature, nothing fed in, written into their weights while it sleeps. Stage 1 builds the loop with Gather still in shadow, so nothing about the body changes yet:
+- *By day:*
+  - every question a model layer is asked is logged as asked (`logs/questions-<date>.jsonl`), with the patch version that answered;
+  - Laya's triage (`cortex/triage.py`, on the CPU) scores moments for "is there a lesson here" into `logs/triage-<date>.jsonl`. `triage.py --fit` refits it on outcome-labelled moments.
+- *Labels* (`learn/gatherLabels.js`): Gather's questions, labelled by what happened next. Gathering that filled the pack unharmed is the act. Gathering followed by harm, failure or death is "nothing". Doing something else with nothing bad following is "nothing" (sampled 1 in 5, as in stage 4).
+- *Write and gate* (`cortex/nightly_write.py`):
+  - the teacher's targets come from those labels only;
+  - the closed-form solve writes them into the second-to-last layer (the method of `results-7b-trial.md`, part 3);
+  - the strength is chosen on the earlier days' last quarter;
+  - the edit is kept only if it beats the unedited layer on the latest (held-out) day by 0.03 balanced accuracy.
+
+  Every version is saved in `logs/layers/patches/`, and `<layer>-current.json` names the one that passed.
+- *Serving:* the model service applies the current patch at start and on `POST /reload` (`cortex/layer_service.py`). At dawn, `learn/nightlyWrite.js` runs labels → write → gate → reload in the background. It's on with `NIGHTLY_WRITE=gather` in `agent/.env`, off by default.
+- *First run, on logged days* (learn from Nov 17, test on Nov 18): the gate **refused** the edit (balanced accuracy 0.548 → 0.530). The outcome labels hold little signal yet. In two days only 12 gatherings went badly, because the hand-written layers protect the creature from the situations that would teach it. This is the limit seen in the 7b trial ("a protected learner can't discover the dangers it's protected from"), and stage 2 addresses it.
+- *Stage 2 (needs a decision):* switch Gather on and remove its day/no-hostile rule, so its own choices cause outcomes, including bad ones, and accept the risk while it learns.
+
 **Eat to heal (2026-11-17, the gap Opus found).** Survive now eats when health is at 10 or below, the food bar is under 18 (where health starts coming back), and food is carried, whatever the hunger drive says. Live, right after the restart: three potatoes eaten in a row at low health.
 
 `npm run sim`: 307 checks.

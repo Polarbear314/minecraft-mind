@@ -95,7 +95,7 @@ function menuFor(layer, o, { planStep = null } = {}) {
  *   .consider(layer, o, drives, extra) -> { key, p, act, ms, model } | null  (latest standing answer)
  *   .tick() -> advance the per-layer tick counters (call once per decide)
  */
-function createModelLayers({ endpoint = 'http://127.0.0.1:3010', memory = null, mode = 'shadow', fetchImpl = (...a) => fetch(...a), now = () => Date.now(), every = EVERY, random = Math.random } = {}) {
+function createModelLayers({ endpoint = 'http://127.0.0.1:3010', memory = null, mode = 'shadow', fetchImpl = (...a) => fetch(...a), now = () => Date.now(), every = EVERY, random = Math.random, logQuestion = null } = {}) {
   const state = { make: {}, shelter: {}, gather: {} };
   let ticks = 0;
   let down = 0; // when the service was last found unreachable
@@ -117,7 +117,7 @@ function createModelLayers({ endpoint = 'http://127.0.0.1:3010', memory = null, 
       // positions (2026-11-17: the 1.7B said "nothing" 100% whenever it was
       // the last option, and picked up the carrot 99% when it wasn't).
       const total = Object.fromEntries(menu.map((m) => [m.key, 0]));
-      let ms = 0; let model = null;
+      let ms = 0; let model = null; let patch = null;
       for (let pass = 0; pass < PASSES; pass++) {
         const order = menu.slice();
         for (let i = order.length - 1; i > 0; i--) { const k = Math.floor(random() * (i + 1)); [order[i], order[k]] = [order[k], order[i]]; }
@@ -129,10 +129,17 @@ function createModelLayers({ endpoint = 'http://127.0.0.1:3010', memory = null, 
         const j = await res.json();
         if (j.error) throw new Error(j.error);
         order.forEach((m, i) => { total[m.key] += (j.probs && j.probs[i] != null ? j.probs[i] : (i === j.pick ? 1 : 0)) / PASSES; });
-        ms += j.ms || 0; model = j.model || model;
+        ms += j.ms || 0; model = j.model || model; patch = j.patch || patch;
       }
       const best = menu.reduce((b, m) => (total[m.key] > total[b.key] ? m : b), menu[0]);
-      st.answer = { key: best.key, p: Math.round(total[best.key] * 1000) / 1000, act: best.act, at: now(), ms, model, menuSize: menu.length, memories: memories.length };
+      st.answer = { key: best.key, p: Math.round(total[best.key] * 1000) / 1000, act: best.act, at: now(), ms, model, menuSize: menu.length, memories: memories.length, patch };
+      // The exact question, for nightly learning (cortex/nightly_write.py): what the
+      // model saw, so a lesson is fitted to real prompts, not reconstructions.
+      if (logQuestion) {
+        try {
+          logQuestion({ ts: new Date(now()).toISOString(), layer, job: JOB[layer], situation, memories, keys: menu.map((m) => m.key), acts: menu.map((m) => m.text), probs: Object.fromEntries(menu.map((m) => [m.key, Math.round(total[m.key] * 1000) / 1000])), patch });
+        } catch (_) { /* logging must never stop a layer */ }
+      }
     } catch (_) {
       down = now();
     } finally {
