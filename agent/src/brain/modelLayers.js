@@ -95,7 +95,9 @@ function menuFor(layer, o, { planStep = null } = {}) {
  *   .consider(layer, o, drives, extra) -> { key, p, act, ms, model } | null  (latest standing answer)
  *   .tick() -> advance the per-layer tick counters (call once per decide)
  */
-function createModelLayers({ endpoint = 'http://127.0.0.1:3010', memory = null, mode = 'shadow', fetchImpl = (...a) => fetch(...a), now = () => Date.now(), every = EVERY, random = Math.random, logQuestion = null } = {}) {
+function createModelLayers({ endpoint = 'http://127.0.0.1:3010', memory = null, mode = 'shadow', modes = {}, gatherRule = true, explore = 0, fetchImpl = (...a) => fetch(...a), now = () => Date.now(), every = EVERY, random = Math.random, logQuestion = null } = {}) {
+  // Each layer's own mode (modes.gather = 'on' ...), else the shared one.
+  const modeOf = (layer) => modes[layer] || mode;
   const state = { make: {}, shelter: {}, gather: {} };
   let ticks = 0;
   let down = 0; // when the service was last found unreachable
@@ -106,7 +108,7 @@ function createModelLayers({ endpoint = 'http://127.0.0.1:3010', memory = null, 
     try {
       const menu = menuFor(layer, o, extra);
       if (menu.length < 2) { st.answer = { key: 'nothing', p: 1, act: null, at: now(), menuSize: 1 }; return; }
-      if (layer === 'gather' && !gatherSafe(o)) { st.answer = { key: 'nothing', p: 1, act: null, at: now(), menuSize: menu.length, gated: true }; return; }
+      if (layer === 'gather' && gatherRule && !gatherSafe(o)) { st.answer = { key: 'nothing', p: 1, act: null, at: now(), menuSize: menu.length, gated: true }; return; }
       const situation = situationWords(o, drives) + (isEvening(o) ? ' Evening is here or coming.' : '') + (layer === 'gather' ? itemsWords(o) : '');
       let memories = [];
       if (memory) {
@@ -132,7 +134,8 @@ function createModelLayers({ endpoint = 'http://127.0.0.1:3010', memory = null, 
         ms += j.ms || 0; model = j.model || model; patch = j.patch || patch;
       }
       const best = menu.reduce((b, m) => (total[m.key] > total[b.key] ? m : b), menu[0]);
-      st.answer = { key: best.key, p: Math.round(total[best.key] * 1000) / 1000, act: best.act, at: now(), ms, model, menuSize: menu.length, memories: memories.length, patch };
+      const ranked = menu.slice().sort((x, y) => total[y.key] - total[x.key]).map((m) => ({ key: m.key, p: Math.round(total[m.key] * 1000) / 1000, act: m.act }));
+      st.answer = { layer, key: best.key, p: Math.round(total[best.key] * 1000) / 1000, act: best.act, at: now(), ms, model, menuSize: menu.length, memories: memories.length, patch, ranked };
       // The exact question, for nightly learning (cortex/nightly_write.py): what the
       // model saw, so a lesson is fitted to real prompts, not reconstructions.
       if (logQuestion) {
@@ -148,7 +151,7 @@ function createModelLayers({ endpoint = 'http://127.0.0.1:3010', memory = null, 
   }
 
   function consider(layer, o, drives, extra = {}) {
-    if (mode === 'off' || !state[layer]) return null;
+    if (modeOf(layer) === 'off' || !state[layer]) return null;
     const st = state[layer];
     const due = ticks % (every[layer] || 1) === 0;
     if (due && !st.busy && now() - down > 30000) ask(layer, o, drives, extra); // fire and forget: the body doesn't wait
@@ -158,14 +161,21 @@ function createModelLayers({ endpoint = 'http://127.0.0.1:3010', memory = null, 
 
   return {
     mode,
+    modes,
     consider,
     tick() { ticks += 1; },
     /** In 'on' mode, the act to use in place of the hand-written proposal (undefined = keep the hand-written one). */
-    actFor(answer) {
-      if (mode !== 'on' || !answer) return undefined;
-      if (answer.key === 'nothing' || answer.p < SURE) return null;
-      return answer.act ? { ...answer.act } : null;
+    actFor(answer, layer = answer && answer.layer) {
+      if (!answer || modeOf(layer) !== 'on') return undefined;
+      // Exploration (stage 2): now and then an acting layer takes its second
+      // choice, so it meets outcomes it would never choose, and can learn from them.
+      // Decided once per answer, so the body doesn't flicker between choices.
+      if (explore > 0 && answer.explored === undefined) answer.explored = !answer.gated && (answer.ranked || []).length > 1 && random() < explore;
+      const pick = answer.explored ? answer.ranked[1] : answer;
+      if (pick.key === 'nothing' || (!answer.explored && answer.p < SURE)) return null;
+      return pick.act ? { ...pick.act } : null;
     },
+    modeOf,
   };
 }
 

@@ -72,6 +72,21 @@ function measure(day, i) {
   const share = (obj) => Object.fromEntries(Object.entries(obj).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, Math.round((100 * v) / n)]));
   const night = day.filter((t) => (t.tod != null ? t.tod >= NIGHT[0] && t.tod < NIGHT[1] : t.isDay === false));
   const foods = day.map((t) => t.food).filter((f) => f != null);
+  // Gather's own record (stage 2: learning from its own outcomes): ticks where its
+  // model's choice moved the body, how each gathering turned out, and which
+  // nightly patch was live (learn/gatherLabels.js judges an outcome).
+  const { outcome: gatherOutcome, gatherKey } = require('../learn/gatherLabels');
+  let gGood = 0; let gBad = 0;
+  const gPatches = {};
+  for (let k = 0; k < n; k++) {
+    const t = day[k];
+    const sh = (t.action.shadow || {}).gather;
+    if (sh && sh.patch != null) gPatches[sh.patch] = (gPatches[sh.patch] || 0) + 1;
+    if (t.action.learned !== 'gather' || !gatherKey(t.action)) continue;
+    const o = gatherOutcome(day, k, true);
+    if (o === 'good') gGood += 1; else if (o === 'bad') gBad += 1;
+  }
+  const gPatch = Object.entries(gPatches).sort((a, b) => b[1] - a[1])[0];
   return {
     day: i + 1,
     from: day[0].ts,
@@ -99,6 +114,12 @@ function measure(day, i) {
     ripeCropsSeen: day.filter((t) => (t.crops || []).some((c) => c.ripe)).length,
     inControl: share(layers),
     spoke: share(voices),
+    gatherActed: day.filter((t) => t.action.learned === 'gather').length,
+    gatherExplored: day.filter((t) => ((t.action.shadow || {}).gather || {}).explored).length,
+    gatherGood: gGood,
+    gatherBad: gBad,
+    gatherMistakeRate: gGood + gBad ? Math.round((100 * gBad) / (gGood + gBad)) : null,
+    gatherPatch: gPatch ? Number(gPatch[0]) : null,
   };
 }
 
@@ -138,6 +159,18 @@ function main() {
     '|---|---|',
     ...['distance', 'area', 'deaths', 'avgFood', 'starvingTicks', 'ate', 'harvested', 'made', 'nightEnclosed'].map(trend),
     '',
+    ...(days.some((d) => d.gatherActed) ? [
+      '## Gather learning from its own outcomes (stage 2)',
+      '',
+      '*Days when the Gather model acted (GATHER_MODE=on). Acted = ticks its choice moved the body; explored = its second choice, on purpose; went well / badly = how its gatherings turned out over the next 30 s (pack grew unharmed / hurt, failed or died); patch = the nightly weight write live that day (none = as downloaded).*',
+      '',
+      '| Day | Acted | Explored | Went well | Went badly | Mistake rate % | Patch |',
+      '|---|---|---|---|---|---|---|',
+      ...days.filter((d) => d.gatherActed).map((d) => `| ${d.day}${d.partial ? '*' : ''} | ${d.gatherActed} | ${d.gatherExplored} | ${d.gatherGood} | ${d.gatherBad} | ${d.gatherMistakeRate ?? '—'} | ${d.gatherPatch != null ? `v${d.gatherPatch}` : 'none'} |`),
+      '',
+      `Mistake rate, day by day: \`${spark(days.filter((d) => d.gatherActed && d.gatherMistakeRate != null).map((d) => d.gatherMistakeRate))}\``,
+      '',
+    ] : []),
   ].join('\n');
   fs.writeFileSync(path.join(ROOT, 'docs', 'results-days.md'), md);
   // The same, in the vault's Lab/ folder (for reading in Obsidian; MindBot never reads it).

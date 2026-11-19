@@ -48,6 +48,17 @@ const config = {
   // act) or 'on'. Needs the model service: npm run cortex (port CORTEX_PORT).
   upperLayers: (['off', 'shadow', 'on'].includes((process.env.UPPER_LAYERS || '').trim().toLowerCase())
     ? (process.env.UPPER_LAYERS || '').trim().toLowerCase() : 'shadow'),
+  // Per layer (GATHER_MODE / SHELTER_MODE / MAKE_MODE = off | shadow | on), over UPPER_LAYERS:
+  // one layer can act while the others shadow, so a change in behaviour is clearly that layer's.
+  layerModes: Object.fromEntries(['make', 'shelter', 'gather'].map((l) => {
+    const v = (process.env[`${l.toUpperCase()}_MODE`] || '').trim().toLowerCase();
+    return [l, ['off', 'shadow', 'on'].includes(v) ? v : null];
+  }).filter(([, v]) => v)),
+  // Gather's day/no-hostile rule (brain/modelLayers.js gatherSafe): fed-in knowledge.
+  // GATHER_RULE=off lets Gather's model decide when it's safe, and learn it (stage 2).
+  gatherRule: (process.env.GATHER_RULE || 'on').trim().toLowerCase() !== 'off',
+  // How often an acting model layer tries its second choice (exploration, stage 2).
+  explore: Math.min(0.5, Math.max(0, Number(process.env.EXPLORE || 0.1))),
   cortexPort: intOr('CORTEX_PORT', 3010),
   anthropicKey: process.env.ANTHROPIC_API_KEY ? process.env.ANTHROPIC_API_KEY.trim() : null,
   llmModel: (process.env.LLM_MODEL || 'claude-haiku-4-5').trim(),

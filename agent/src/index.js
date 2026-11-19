@@ -103,7 +103,7 @@ const narrator = layersMode && claudeMode
   : null;
 // Stage 6: Make, Shelter and Gather as language models (4B/3B/2B), each
 // reading its own top memories (embedding retrieval) and scoring its menu.
-const modelLayers = layersMode && config.upperLayers !== 'off' ? (() => {
+const modelLayers = layersMode && (config.upperLayers !== 'off' || Object.values(config.layerModes).some((m) => m !== 'off')) ? (() => {
   const { createModelLayers } = require('./brain/modelLayers');
   const { createMemory, ollamaEmbedder } = require('./vault/memory');
   const model = (process.env.EMBED_MODEL || '').trim();
@@ -117,6 +117,7 @@ const modelLayers = layersMode && config.upperLayers !== 'off' ? (() => {
   const { appendJsonLine } = require('./decision/decisionLog');
   return createModelLayers({
     endpoint: `http://127.0.0.1:${config.cortexPort}`, memory, mode: config.upperLayers,
+    modes: config.layerModes, gatherRule: config.gatherRule, explore: config.explore,
     // Every question the model layers are asked (logs/questions-<date>.jsonl), for nightly learning.
     logQuestion: config.decisionLogDir ? (q) => appendJsonLine(config.decisionLogDir, 'questions', q) : null,
   });
@@ -132,7 +133,7 @@ const decideFn = layersMode
   : claudeMode && llmDecideFn
     ? createArbiter({ decide: llmDecideFn, blackboard, toAction, planRunner })
     : llmDecideFn;
-if (layersMode) console.log(`[mind] MIND=layers: the behaviour stack decides (survive > make > shelter > gather > forage > wander); Claude ${narrator ? 'narrates and dreams, but never decides' : 'only dreams'}. Learned layers: ${config.learnedLayers}. Model layers (Make/Shelter/Gather): ${config.upperLayers}.`);
+if (layersMode) console.log(`[mind] MIND=layers: the behaviour stack decides (survive > make > shelter > gather > forage > wander); Claude ${narrator ? 'narrates and dreams, but never decides' : 'only dreams'}. Learned layers: ${config.learnedLayers}. Model layers (Make/Shelter/Gather): ${['make', 'shelter', 'gather'].map((l) => `${l} ${config.layerModes[l] || config.upperLayers}`).join(', ')}${config.gatherRule ? '' : '; the Gather day/no-hostile rule OFF'}${Object.values(config.layerModes).includes('on') ? `; exploring ${Math.round(config.explore * 100)}%` : ''}.`);
 
 // Always-on regions on the local model, each its own loop (brain/regions.js).
 const localMind = brain.local && brain.local.model

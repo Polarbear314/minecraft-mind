@@ -98,7 +98,12 @@ One family, so size is the main difference between the layers (the taper: 4B →
   Every version is saved in `logs/layers/patches/`, and `<layer>-current.json` names the one that passed.
 - *Serving:* the model service applies the current patch at start and on `POST /reload` (`cortex/layer_service.py`). At dawn, `learn/nightlyWrite.js` runs labels → write → gate → reload in the background. It's on with `NIGHTLY_WRITE=gather` in `agent/.env`, off by default.
 - *First run, on logged days* (learn from Nov 17, test on Nov 18): the gate **refused** the edit (balanced accuracy 0.548 → 0.530). The outcome labels hold little signal yet. In two days only 12 gatherings went badly, because the hand-written layers protect the creature from the situations that would teach it. This is the limit seen in the 7b trial ("a protected learner can't discover the dangers it's protected from"), and stage 2 addresses it.
-- *Stage 2 (needs a decision):* switch Gather on and remove its day/no-hostile rule, so its own choices cause outcomes, including bad ones, and accept the risk while it learns.
+- *Stage 2 (built 2026-11-18, switched on by the settings below):* Gather's own choices cause outcomes, including bad ones, so the nightly write has something of its own to learn from.
+  - **One layer acts:** `GATHER_MODE=on` (also `SHELTER_MODE`, `MAKE_MODE`; each over `UPPER_LAYERS`). Gather's model moves the body while Make and Shelter shadow, so a change in behaviour is clearly Gather's.
+  - **No fed-in rule:** `GATHER_RULE=off` drops the day/no-hostile rule, so Gather decides for itself when it's safe, and learns it. Survive stays the instinct floor (flee, avoid lava and drops).
+  - **Exploration:** `EXPLORE=0.1`. An acting layer takes its second choice 10% of the time (decided once per answer, logged `explored`), so it meets outcomes it would never choose.
+  - **The learning curve:** `npm run days` adds Gather's own record per day (acted, explored, gatherings that went well or badly, mistake rate, the patch version live), with the mistake rate as a sparkline across days.
+  - **The dig-in instinct fixed first** (`decision/reflexes.js`). Live, Shelter's dig count was sometimes lost and the body dug straight down a dozen blocks, into stone and water (two deaths, 2026-11-18). Now, in a closed shaft with nothing overhead and no count, it seals overhead, and it digs at most two blocks more for material. Without the fix those deaths would have blurred Gather's curve.
 
 **Eat to heal (2026-11-17, the gap Opus found).** Survive now eats when health is at 10 or below, the food bar is under 18 (where health starts coming back), and food is carried, whatever the hunger drive says. Live, right after the restart: three potatoes eaten in a row at low health.
 

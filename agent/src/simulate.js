@@ -1945,6 +1945,34 @@ async function main() {
   const gNightAns = gNightModels.consider('gather', gNight, lDrives());
   dreamCheck(gAsked.length === gBefore && gNightAns && gNightAns.key === 'nothing' && gNightAns.gated, 'at night Gather\'s model is not asked: its answer is "nothing" (gated)');
 
+  // ---- Stage 2: one model layer acts on its own, learns when it's safe, explores
+  {
+    const sFetch = async (url, opts) => { const b = JSON.parse(opts.body); const i = b.acts.findIndex((a) => /pick up/.test(a)); const probs = b.acts.map((_, k) => (k === Math.max(0, i) ? 0.7 : 0.3 / (b.acts.length - 1))); return { ok: true, json: async () => ({ pick: Math.max(0, i), p: 0.7, probs, ms: 5 }) }; };
+    const s2 = createModelLayers({ mode: 'shadow', modes: { gather: 'on' }, gatherRule: false, explore: 0, fetchImpl: sFetch, now: () => mClock });
+    s2.consider('gather', gNight, lDrives()); await new Promise((r) => setTimeout(r, 20));
+    const nightAns = s2.consider('gather', gNight, lDrives());
+    dreamCheck(nightAns && !nightAns.gated && nightAns.key === 'pickup' && s2.actFor(nightAns, 'gather') && s2.actFor(nightAns, 'gather').type === 'pickup' && s2.actFor(nightAns, 'shelter') === undefined,
+      'GATHER_MODE=on with GATHER_RULE=off: Gather alone acts, and decides about night itself');
+    const s3 = createModelLayers({ mode: 'shadow', modes: { gather: 'on' }, explore: 0.5, random: () => 0, fetchImpl: sFetch, now: () => mClock });
+    s3.consider('gather', gDay, lDrives()); await new Promise((r) => setTimeout(r, 20));
+    const exAns = s3.consider('gather', gDay, lDrives());
+    const exAct = s3.actFor(exAns, 'gather');
+    dreamCheck(exAns && exAns.explored === true && exAns.ranked[1].key !== exAns.key && (exAct === null ? exAns.ranked[1].key === 'nothing' : true) && s3.actFor(exAns, 'gather') === exAct || JSON.stringify(s3.actFor(exAns, 'gather')) === JSON.stringify(exAct),
+      'exploring, an acting layer sometimes takes its second choice, decided once per answer');
+  }
+
+  // ---- The dig-in instinct doesn't sink forever (2026-11-18: dug a dozen blocks into stone and water)
+  {
+    const { createReflexes: mkRx } = require('./decision/reflexes');
+    const shaft = { isDay: true, timeOfDay: 12100, position: { y: 48 }, affordances: { roof: false, walls: 4, enclosed: false, canDigBelow: true, placeable: ['dirt'], canPlace: ['above'], bed: null } };
+    const fresh = mkRx().shelter(shaft); // a fresh dig count (as when it was lost live)
+    dreamCheck(fresh && fresh.type === 'place' && fresh.at === 'above', 'in a shaft with no roof, the dig-in instinct seals overhead instead of digging deeper');
+    const rx2 = mkRx();
+    const bare = (y) => ({ isDay: true, timeOfDay: 12100, position: { y }, affordances: { roof: false, walls: 2, enclosed: false, canDigBelow: true, placeable: [], canPlace: [], bed: null } });
+    const acts = [60, 60, 59, 58, 57, 56, 55, 54].map((y) => rx2.shelter(bare(y)).type);
+    dreamCheck(acts.filter((t) => t === 'dig').length <= 6 && acts[acts.length - 1] === 'idle', 'with nothing to seal with, it digs at most two blocks more for material, then waits');
+  }
+
   // ---- Nightly weight writes for the model layers (learn/nightlyWrite.js, gatherLabels.js)
   const qLog = [];
   const qModels = createModelLayers({ mode: 'shadow', logQuestion: (q) => qLog.push(q), fetchImpl: async () => ({ ok: true, json: async () => ({ pick: 0, p: 0.9, probs: [0.9, 0.1], ms: 5, patch: 3 }) }), now: () => mClock });

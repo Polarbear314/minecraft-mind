@@ -60,6 +60,12 @@ function createReflexes() {
     const feetY = Math.floor(o.position.y);
     if (!dig || feetY > dig.startY) dig = { startY: feetY }; // (re)start where we stand
     const depth = dig.startY - feetY;
+    // Already down a shaft (every side closed, nothing overhead) though the count
+    // says it hasn't dug yet: seal it, don't dig deeper. Live, that count was
+    // sometimes lost and the body dug straight down a dozen blocks, into stone
+    // and water (2026-11-18: two deaths). A normal dig-in is untouched: it starts
+    // in the open, and at 1-2 blocks deep the spot over its head still sits above ground.
+    if (depth === 0 && a.walls >= 4 && !a.roof && a.placeable && a.placeable.length) return { type: 'place', at: 'above', reflex: 'shelter' };
     if (depth < DIG_DEPTH) {
       if (a.canDigBelow) return { type: 'dig', at: 'below', reflex: 'shelter' };
       dig = null; // can't dig here (water, air below...): let other instincts move us
@@ -68,8 +74,9 @@ function createReflexes() {
     // Deep enough: seal overhead, then any open side.
     if (!a.roof) {
       if (a.placeable && a.placeable.length) return { type: 'place', at: 'above', reflex: 'shelter' };
-      if (a.canDigBelow) return { type: 'dig', at: 'below', reflex: 'shelter' }; // dig for something to seal with
-      return null;
+      // Dig for something to seal with, but at most two blocks more.
+      if (a.canDigBelow && depth < DIG_DEPTH + 2) return { type: 'dig', at: 'below', reflex: 'shelter' };
+      return { type: 'idle', reflex: 'shelter', reason: 'nothing to seal with; waiting here' };
     }
     const open = (a.canPlace || []).filter((d) => SIDES.includes(d));
     if (open.length && a.placeable && a.placeable.length) return { type: 'place', at: open[0], reflex: 'shelter' };
