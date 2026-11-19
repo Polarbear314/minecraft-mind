@@ -122,6 +122,15 @@ const modelLayers = layersMode && (config.upperLayers !== 'off' || Object.values
     logQuestion: config.decisionLogDir ? (q) => appendJsonLine(config.decisionLogDir, 'questions', q) : null,
   });
 })() : null;
+// The last nightly weight write's verdict, per layer (it runs on its own, so a
+// restart doesn't lose it: logs/layers/patches/<layer>-v<N>.json).
+if (layersMode && (process.env.NIGHTLY_WRITE || '').trim()) {
+  const { lastResult } = require('./learn/nightlyWrite');
+  for (const l of process.env.NIGHTLY_WRITE.split(',').map((x) => x.trim()).filter(Boolean)) {
+    const r = lastResult(l);
+    console.log(`[mind] Nightly weight write (${l}): ${r ? `last v${r.version ?? '?'} ${r.passed ? 'SERVED' : 'not served'}: ${r.reason || r.skipped || ''}` : 'none yet'}`);
+  }
+}
 const layerStack = layersMode ? createLayerStack({
   planRunner, blackboard,
   learned: learnedLoader(path.resolve(__dirname, '..', '..', 'logs', 'layers')),
@@ -188,7 +197,7 @@ const nightly = layersMode && dreamProvider && config.learnedLayers !== 'off' ? 
       const { runNightlyWrite } = require('./learn/nightlyWrite');
       runNightlyWrite({ layers: writeLayers, endpoint: `http://127.0.0.1:${config.cortexPort}` }).then((rs) => {
         for (const r of rs) {
-          const text = r.error ? `${r.layer || ''} write failed: ${r.error}` : `${r.layer} v${r.version}: ${r.passed ? `SERVED${r.applied === false ? ' (reload failed)' : ''}` : 'not served'} (${r.reason})`;
+          const text = r.error ? `${r.layer || ''} write failed: ${r.error}` : `${r.layer}: labelled; writing and gating in its own process (log ${path.relative(path.resolve(__dirname, '..', '..'), r.log)})`;
           console.log(`[sleep] weight write: ${text}`);
           blackboard.fire('hippocampus', `weight write: ${text}`);
         }

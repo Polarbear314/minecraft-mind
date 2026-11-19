@@ -2,7 +2,7 @@
 
 At dawn (learn/nightlyWrite.js), or by hand:
 
-    python nightly_write.py --layer gather [--held 2026-11-18] [--train 2026-11-17,...] [--dry]
+    python nightly_write.py --layer gather [--held 2026-11-18] [--train 2026-11-17,...] [--dry] [--reload http://127.0.0.1:3010]
 
 1. ROWS: logs/layers/write/<layer>-rows-<day>.jsonl (learn/gatherLabels.js): the
    questions the layer was asked, each labelled by what happened afterwards.
@@ -208,7 +208,16 @@ def main():
     os.makedirs(PATCHES, exist_ok=True)
     with open(os.path.join(PATCHES, f"{LAYER}-v{report.get('version', 'dry')}.json"), "w", encoding="utf8") as f:
         json.dump(report, f, indent=1)
-    print("[write] RESULT " + json.dumps({k: report.get(k) for k in ("layer", "version", "passed", "reason", "heldUnedited", "heldEdited", "plainKL", "secs")}), flush=True)
+    if report.get("passed") and arg("reload"):  # apply it in the live model service
+        try:
+            import urllib.request
+            req = urllib.request.Request(arg("reload").rstrip("/") + "/reload", data=json.dumps({"layers": [LAYER]}).encode(),
+                                         headers={"Content-Type": "application/json"}, method="POST")
+            urllib.request.urlopen(req, timeout=120).read()
+            report["applied"] = True
+        except Exception as err:  # the patch stays current on disk: the service applies it at its next start
+            report["applied"], report["reloadError"] = False, str(err)
+    print("[write] RESULT " + json.dumps({k: report.get(k) for k in ("layer", "version", "passed", "reason", "heldUnedited", "heldEdited", "plainKL", "applied", "secs")}), flush=True)
 
 
 if __name__ == "__main__":

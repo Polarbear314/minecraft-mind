@@ -115,7 +115,7 @@ function measure(day, i) {
     inControl: share(layers),
     spoke: share(voices),
     gatherActed: day.filter((t) => t.action.learned === 'gather').length,
-    gatherExplored: day.filter((t) => ((t.action.shadow || {}).gather || {}).explored).length,
+    gatherExplored: day.filter((t) => t.action.learned === 'gather' && ((t.action.shadow || {}).gather || {}).explored).length, // only when it acted
     gatherGood: gGood,
     gatherBad: gBad,
     gatherMistakeRate: gGood + gBad ? Math.round((100 * gBad) / (gGood + gBad)) : null,

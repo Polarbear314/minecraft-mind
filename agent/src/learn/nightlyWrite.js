@@ -1,18 +1,22 @@
 // The nightly weight write for the model layers (docs/design-subsumption.md):
 // at dawn, after the classifiers' nightly learning, the day's moments become
-// outcome labels (learn/gatherLabels.js), the lesson is written into the
-// layer's weights and gated on the latest day (cortex/nightly_write.py), and if
-// it passed, the model service applies it (POST /reload). It runs in the
-// background, so sleep and the dream never wait for it, and one at a time.
+// outcome labels (learn/gatherLabels.js, quick, here), then the lesson is
+// written into the layer's weights and gated on the latest day
+// (cortex/nightly_write.py). The write runs as its OWN detached process: it
+// takes ~10 minutes, and an agent restart (a disconnect, a death) used to kill it
+// midway (2026-11-18, twice). If its edit passes, it applies it itself
+// (POST /reload on the model service). Its log: logs/layers/write/nightly-<layer>-<date>.log;
+// every version's report: logs/layers/patches/<layer>-v<N>.json.
 //
 // On with NIGHTLY_WRITE=gather in agent/.env (off by default). Only Gather has
 // outcome labels so far.
+const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..', '..', '..');
 const LABELLERS = { gather: path.join(__dirname, 'gatherLabels.js') };
-let running = false;
+const WRITE_LOGS = path.join(ROOT, 'logs', 'layers', 'write');
 
 const localDate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
@@ -28,37 +32,42 @@ function run(cmd, args, { spawnImpl = spawn, env = process.env } = {}) {
   });
 }
 
-/**
- * runNightlyWrite({ layers, now, endpoint, spawnImpl, fetchImpl, python }) -> Promise<[{ layer, passed, version, reason } | { layer, error }]>
- */
-async function runNightlyWrite({ layers = ['gather'], now = new Date(), endpoint = 'http://127.0.0.1:3010', spawnImpl = spawn, fetchImpl = (...a) => fetch(...a), python = path.join(ROOT, 'agent', '.venv-laya', 'Scripts', 'python.exe') } = {}) {
-  if (running) return [{ error: 'a nightly write is already running' }];
-  running = true;
-  const results = [];
+/** The newest version's report for a layer (what the last write decided), or null. */
+function lastResult(layer, dir = path.join(ROOT, 'logs', 'layers', 'patches')) {
   try {
-    const days = [localDate(new Date(now.getTime() - 86400000)), localDate(now)];
-    for (const layer of layers) {
-      if (!LABELLERS[layer]) { results.push({ layer, error: 'no outcome labels for this layer yet' }); continue; }
-      const lab = await run(process.execPath, [LABELLERS[layer], '--days', days.join(',')], { spawnImpl });
-      if (lab.code !== 0) { results.push({ layer, error: `labelling failed: ${lab.out.slice(-300)}` }); continue; }
-      const env = { ...process.env, TRANSFORMERS_VERBOSITY: 'error', HF_HUB_DISABLE_PROGRESS_BARS: '1', PYTHONUNBUFFERED: '1' };
-      const w = await run(python, [path.join(ROOT, 'agent', 'src', 'cortex', 'nightly_write.py'), '--layer', layer], { spawnImpl, env });
-      const line = w.out.split('\n').find((l) => l.startsWith('[write] RESULT ')) || w.out.split('\n').reverse().find((l) => l.startsWith('{'));
-      let res = null;
-      try { res = JSON.parse(line.replace('[write] RESULT ', '')); } catch (_) { /* below */ }
-      if (!res) { results.push({ layer, error: `write failed: ${w.out.slice(-300)}` }); continue; }
-      if (res.passed) {
-        try {
-          await fetchImpl(`${endpoint}/reload`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ layers: [layer] }), signal: AbortSignal.timeout(60000) });
-          res.applied = true;
-        } catch (err) { res.applied = false; res.reloadError = err.message; }
-      }
-      results.push(res);
+    const files = fs.readdirSync(dir).filter((f) => new RegExp(`^${layer}-v\\d+\\.json$`).test(f));
+    const v = Math.max(...files.map((f) => Number(f.match(/-v(\d+)\./)[1])));
+    if (!Number.isFinite(v)) return null;
+    return JSON.parse(fs.readFileSync(path.join(dir, `${layer}-v${v}.json`), 'utf8'));
+  } catch (_) { return null; }
+}
+
+/**
+ * runNightlyWrite({ layers, now, endpoint, spawnImpl, python }) -> Promise<[{ layer, started, log, pid } | { layer, error }]>
+ * Labels in-process (seconds), then starts each layer's write detached and returns.
+ */
+async function runNightlyWrite({ layers = ['gather'], now = new Date(), endpoint = 'http://127.0.0.1:3010', spawnImpl = spawn, python = path.join(ROOT, 'agent', '.venv-laya', 'Scripts', 'python.exe') } = {}) {
+  const results = [];
+  const days = [localDate(new Date(now.getTime() - 86400000)), localDate(now)];
+  for (const layer of layers) {
+    if (!LABELLERS[layer]) { results.push({ layer, error: 'no outcome labels for this layer yet' }); continue; }
+    const lab = await run(process.execPath, [LABELLERS[layer], '--days', days.join(',')], { spawnImpl });
+    if (lab.code !== 0) { results.push({ layer, error: `labelling failed: ${lab.out.slice(-300)}` }); continue; }
+    const log = path.join(WRITE_LOGS, `nightly-${layer}-${localDate(now)}.log`);
+    let fd = 'ignore';
+    try { fs.mkdirSync(WRITE_LOGS, { recursive: true }); fd = fs.openSync(log, 'a'); } catch (_) { /* no log file: still run */ }
+    const env = { ...process.env, TRANSFORMERS_VERBOSITY: 'error', HF_HUB_DISABLE_PROGRESS_BARS: '1', PYTHONUNBUFFERED: '1' };
+    try {
+      const p = spawnImpl(python, [path.join(ROOT, 'agent', 'src', 'cortex', 'nightly_write.py'), '--layer', layer, '--reload', endpoint],
+        { cwd: ROOT, env, detached: true, windowsHide: true, stdio: ['ignore', fd, fd] });
+      if (p && typeof p.unref === 'function') p.unref(); // survives the agent restarting
+      results.push({ layer, started: true, log, pid: p && p.pid });
+    } catch (err) {
+      results.push({ layer, error: `could not start the write: ${err.message}` });
     }
-  } finally {
-    running = false;
+    if (typeof fd === 'number') { try { fs.closeSync(fd); } catch (_) { /* fine */ } }
   }
   return results;
 }
 
-module.exports = { runNightlyWrite, localDate };
+module.exports = { runNightlyWrite, lastResult, localDate };

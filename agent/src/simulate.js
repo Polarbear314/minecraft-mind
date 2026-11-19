@@ -2000,17 +2000,18 @@ async function main() {
     'Gather\'s outcome labels: gathering that filled the pack unharmed is good, gathering then hurt is bad');
   const { runNightlyWrite } = require('./learn/nightlyWrite');
   const EventEmitter = require('events');
-  const fakeSpawn = (resultLine) => () => {
-    const p = new EventEmitter(); p.stdout = new EventEmitter(); p.stderr = new EventEmitter();
-    setImmediate(() => { p.stdout.emit('data', `[labels] ok\n${resultLine}\n`); p.emit('close', 0); });
+  const spawned = [];
+  const fakeSpawn = (cmd, args, opts) => {
+    spawned.push({ cmd, args, opts });
+    const p = new EventEmitter(); p.stdout = new EventEmitter(); p.stderr = new EventEmitter(); p.pid = 4242; p.unref = () => { p.unrefed = true; };
+    if (!(opts && opts.detached)) setImmediate(() => { p.stdout.emit('data', '[labels] ok\n'); p.emit('close', 0); });
+    spawned[spawned.length - 1].proc = p;
     return p;
   };
-  const reloads = [];
-  const fakeFetch = async (url, opts) => { reloads.push({ url, body: JSON.parse(opts.body) }); return { ok: true, json: async () => ({}) }; };
-  const wPass = await runNightlyWrite({ layers: ['gather'], spawnImpl: fakeSpawn('[write] RESULT {"layer":"gather","version":4,"passed":true,"reason":"0.6 -> 0.7"}'), fetchImpl: fakeFetch });
-  const wFail = await runNightlyWrite({ layers: ['gather'], spawnImpl: fakeSpawn('[write] RESULT {"layer":"gather","version":5,"passed":false,"reason":"0.6 -> 0.6"}'), fetchImpl: fakeFetch });
-  dreamCheck(wPass[0].passed && wPass[0].applied && wFail[0].passed === false && reloads.length === 1 && /\/reload$/.test(reloads[0].url) && reloads[0].body.layers[0] === 'gather',
-    'a nightly weight write is applied (service /reload) only when it passed its gate');
+  const wRes = await runNightlyWrite({ layers: ['gather'], spawnImpl: fakeSpawn });
+  const writeSpawn = spawned.find((x) => x.opts && x.opts.detached);
+  dreamCheck(wRes[0].started && writeSpawn && writeSpawn.proc.unrefed && writeSpawn.args.includes('--reload') && /nightly_write\.py$/.test(writeSpawn.args[0]),
+    'the nightly weight write runs as its own detached process (an agent restart cannot kill it) and applies its own patch if it passes');
 
   // ---- Weighted memory and forgetting (docs/design-subsumption.md, stage 2)
   console.log('\n=== Weighted memory ===');
