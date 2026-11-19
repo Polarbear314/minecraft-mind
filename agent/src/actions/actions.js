@@ -17,7 +17,7 @@ try {
 }
 const { borderOf, clampInside } = require('../perception/worldBorder');
 const {
-  DIRECTIONS, MOVE_DIRECTIONS, LIQUID, isEmpty, isOpen, isSolid, isDiggable, facing, resolve,
+  DIRECTIONS, MOVE_DIRECTIONS, LIQUID, isEmpty, isOpen, isSolid, isDiggable, facing, resolve, feetOf,
 } = require('./bodyFrame');
 const { usableKind } = require('../perception/affordances');
 
@@ -184,6 +184,42 @@ async function placeAt(bot, at, wanted) {
   if (bot.pathfinder && typeof bot.pathfinder.setGoal === 'function') bot.pathfinder.setGoal(null);
   fireAndForget(bot.placeBlock(ref, face));
   return done(`set ${pretty(item.name)} down ${at}`);
+}
+
+/**
+ * Climb one block up out of a hole: jump, and set a carried block under the feet
+ * at the top of the jump (pillaring). A roof over the head is broken first.
+ * Purpose-free like the rest of the body: the shelter instinct is what uses it
+ * to leave its hole in the morning.
+ */
+const CLIMB_PREFER = ['dirt', 'cobblestone', 'cobbled_deepslate', 'stone', 'netherrack', 'andesite', 'diorite', 'granite', 'oak_planks', 'spruce_planks', 'birch_planks'];
+async function climbUp(bot) {
+  const pos = bot.entity && bot.entity.position;
+  if (!pos) return fail('my legs would not answer');
+  const feet = feetOf(bot);
+  const overHead = blockAtXYZ(bot, { x: feet.x, y: feet.y + 2, z: feet.z });
+  if (overHead && !isOpen(overHead)) return digAt(bot, 'above'); // the roof first
+  const items = bot.inventory && typeof bot.inventory.items === 'function' ? bot.inventory.items() : [];
+  const isBlock = (i) => (bot.registry && bot.registry.blocksByName ? !!bot.registry.blocksByName[i.name] : true);
+  const blocks = items.filter(isBlock).filter((i) => !/sand|gravel|_bed$|door|crafting_table|sapling|torch|ladder|vine/.test(i.name));
+  if (!blocks.length) return fail('I carried nothing to stand on');
+  const item = CLIMB_PREFER.map((n) => blocks.find((i) => i.name === n)).find(Boolean) || blocks[0];
+  const under = blockAtXYZ(bot, { x: feet.x, y: feet.y - 1, z: feet.z });
+  if (!isSolid(under)) return fail('there was nothing under me to stand on');
+  if (typeof bot.placeBlock !== 'function' || typeof bot.setControlState !== 'function') return fail('my legs would not answer');
+  try { await bot.equip(item, 'hand'); } catch (_) { return fail(`my hand would not take the ${pretty(item.name)}`); }
+  if (bot.pathfinder && typeof bot.pathfinder.setGoal === 'function') bot.pathfinder.setGoal(null);
+  const startY = pos.y;
+  bot.setControlState('jump', true);
+  fireAndForget((async () => {
+    try {
+      for (let k = 0; k < 20 && bot.entity.position.y < startY + 1; k++) await new Promise((r) => setTimeout(r, 25));
+      await bot.placeBlock(under, new Vec3(0, 1, 0));
+    } finally {
+      try { bot.setControlState('jump', false); } catch (_) { /* fine */ }
+    }
+  })());
+  return done(`climbed, setting ${pretty(item.name)} under my feet`);
 }
 
 /** Work a block with the hand: open a door, lie in a bed, flip a lever. */
@@ -419,6 +455,10 @@ async function execute(bot, action) {
       wanders.delete(bot);
       return done(`stepped ${dir}`);
     }
+
+    case 'climb':
+      // Up one block out of a hole (jump + a block under the feet); a roof first.
+      return climbUp(bot);
 
     case 'jump': {
       if (typeof bot.setControlState !== 'function') return fail('my legs would not answer');

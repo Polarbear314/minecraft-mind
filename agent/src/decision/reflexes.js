@@ -36,8 +36,11 @@ function isEvening(o) {
   return o.timeOfDay != null && o.timeOfDay >= DUSK && o.timeOfDay < DAWN;
 }
 
+const CLIMBS_PER_DAY = 60; // a bound, so a narrow cave can't keep it pillaring all day
+
 function createReflexes() {
   let dig = null; // { startY } while digging in
+  let climbs = 0; // climbs out of a hole this morning
 
   /** A creeper close by: get away from it. */
   function creeper(o) {
@@ -47,7 +50,8 @@ function createReflexes() {
 
   /** Evening and night: stay sheltered, sleep, or dig in. */
   function shelter(o) {
-    if (!isEvening(o)) { dig = null; return null; }
+    if (!isEvening(o)) { dig = null; return climbOut(o); }
+    climbs = 0;
     const a = o.affordances;
     if (!a || !o.position) return null;
     if (a.enclosed) return { type: 'idle', reflex: 'shelter', reason: 'sheltered until morning' };
@@ -81,6 +85,19 @@ function createReflexes() {
     const open = (a.canPlace || []).filter((d) => SIDES.includes(d));
     if (open.length && a.placeable && a.placeable.length) return { type: 'place', at: open[0], reflex: 'shelter' };
     return { type: 'idle', reflex: 'shelter', reason: 'in my hole, waiting for morning' };
+  }
+
+  /**
+   * By day, down a hole (every side closed at feet and head): climb out, breaking
+   * the night's roof first. The dig-in instinct's other half: without it the body
+   * stayed at the bottom of its shaft for days (2026-11-18).
+   */
+  function climbOut(o) {
+    const a = o.affordances;
+    if (!a || a.walls < 4 || climbs >= CLIMBS_PER_DAY) return null;
+    if (!a.roof && !(a.placeable && a.placeable.length)) return null; // nothing to stand on: other layers
+    climbs += 1;
+    return { type: 'climb', reflex: 'shelter', reason: 'climbing out of my hole into the day' };
   }
 
   /** Hungry with nothing to eat: gather meat, or strike a food animal. */

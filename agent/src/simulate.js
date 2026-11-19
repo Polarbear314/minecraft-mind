@@ -1971,6 +1971,17 @@ async function main() {
     const bare = (y) => ({ isDay: true, timeOfDay: 12100, position: { y }, affordances: { roof: false, walls: 2, enclosed: false, canDigBelow: true, placeable: [], canPlace: [], bed: null } });
     const acts = [60, 60, 59, 58, 57, 56, 55, 54].map((y) => rx2.shelter(bare(y)).type);
     dreamCheck(acts.filter((t) => t === 'dig').length <= 6 && acts[acts.length - 1] === 'idle', 'with nothing to seal with, it digs at most two blocks more for material, then waits');
+    // ...and its other half: by day it climbs back out (2026-11-18: stuck 25 blocks down for days).
+    const rx3 = mkRx();
+    const morning = (over) => ({ isDay: true, timeOfDay: 1000, position: { y: 40 }, affordances: { roof: false, walls: 4, enclosed: false, canDigBelow: true, placeable: ['dirt'], canPlace: ['above'], bed: null, ...over } });
+    const c1 = rx3.shelter(morning({ roof: true, enclosed: true }));
+    const c2 = rx3.shelter(morning({}));
+    dreamCheck(c1 && c1.type === 'climb' && c2 && c2.type === 'climb' && rx3.shelter(morning({ walls: 2 })) === null && rx3.shelter(morning({ placeable: [] })) === null,
+      'by day, down a hole, the shelter instinct climbs out (roof first); not in the open, not with nothing to stand on');
+    const rx4 = mkRx();
+    let climbsSeen = 0;
+    for (let k = 0; k < 80; k++) if ((rx4.shelter(morning({})) || {}).type === 'climb') climbsSeen += 1;
+    dreamCheck(climbsSeen === 60, 'climbing out is bounded per day, so a narrow cave can\'t keep it pillaring');
   }
 
   // ---- Nightly weight writes for the model layers (learn/nightlyWrite.js, gatherLabels.js)
