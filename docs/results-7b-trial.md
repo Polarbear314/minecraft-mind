@@ -291,6 +291,26 @@ For MindBot's nights, the design that follows is: Opus (or the creature's stated
 - **Opus's value here is judgement *and* simplification:** it turns a context-dependent routine into one clear lesson. That's a teacher's skill, not a surgeon's.
 - **Limits:** 20 held-out cases per side, one run each, settings chosen on a check half that has twice proven optimistic.
 
+## One layer or five? (2026-11-18)
+
+*MEMIT, the method the solve comes from, spreads an edit over several layers because that tends to generalise better. Tried on both flaws, with both teachers.*
+
+**Method** (`decision_write.py multi`): the change each teacher example needs at the top layer's output (the same targets as before) is spread over five late layers (Gather 22–26, Shelter 30–34), solved bottom-up. Before each layer, the examples are re-run with the layers below already edited, and that layer takes 1/(layers left) of the change still missing at the top. The neurons per layer follow the published recipe (256 most active at the answer). Strength is chosen on the check half from λ ∈ {1, 10} × dose ∈ {0.5–2}, with the same plain-text guard.
+
+| Held-out (test / controls right) | Unedited | One layer | Five layers | Plain-text KL (five) |
+|---|---|---|---|---|
+| Gather, rule teacher | 7 / 15 | **13 / 16** | 9 / 18 | 0.003 |
+| Gather, Opus teacher (fixed confidence) | 7 / 15 | 13 / 11 | 10 / 14 | 0.002 |
+| Shelter, rule teacher | 7 / 11 | 8 / 11 | **11 / 14** | 0.015 |
+| Shelter, Opus teacher | 7 / 11 | **12 / 13** | 10 / 14 | 0.002 |
+
+- **Five layers were more reliable, not better.** Every five-layer edit improved *both* sides over the unedited model. One-layer edits ranged from the best results (Gather rule 13/16, Shelter Opus 12/13) to no effect at all (Shelter rule 8/11).
+- **The rule teacher on Shelter** (which failed at one layer) worked over five: 11/14, about as well as Opus as teacher.
+- **The best one-layer edits fixed more test cases.** Five-layer edits leaned toward the controls: they were more cautious.
+- **Totals (test + controls, of 40):** one layer 29, 24, 19, 25; five layers 27, 24, 25, 24. Within the noise of 20 cases per side, the two are equal on average; five layers have the smaller spread.
+
+**For a nightly loop,** where no one hand-picks the best edit, the five-layer write is the safer default. It never failed here, and it changed plain-text predictions as little as or less than one layer.
+
 ## Next
 
 - **Not ROME yet.** The plan was to try ROME on the same flaw if steering worked. It didn't. The problem looks like a missing input more than a stored fact to rewrite, so a ROME edit would face the same "when" problem.

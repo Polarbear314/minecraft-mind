@@ -11,5 +11,7 @@ rem The upper layers' models (Make/Shelter/Gather), minimized; the agent works w
 start "Minecraft Mind - CORTEX" /min cmd /k "cd /d "%~dp0..\agent" && .venv-laya\Scripts\python src\cortex\layer_service.py"
 start "Minecraft Mind - AGENT" /min powershell -NoExit -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-agent.ps1"
 start "Minecraft Mind - BRAIN" /min cmd /k "cd /d "%~dp0..\agent" && node src\tools\brainView.js"
+rem Laya's day-time triage (on the CPU): flags moments worth a lesson tonight, logs\triage-<date>.jsonl.
+start "Minecraft Mind - TRIAGE" /min cmd /k "cd /d "%~dp0..\agent" && .venv-laya\Scripts\python src\cortex\triage.py"
 timeout /t 5 /nobreak >nul
 start "" http://localhost:3008

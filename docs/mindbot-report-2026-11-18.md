@@ -356,6 +356,23 @@ To see whether the closed-form write holds beyond one case, it was tried on a se
 
 **Across both flaws,** Opus as teacher, with firm labels, was the most reliable of the teachers tried. Its value was judgement plus simplification, turning a complicated routine into one clear lesson: a teacher's skill rather than a surgeon's. The evidence is still small: 20 held-out cases per side, one run each.
 
+### 5.8 One layer or five
+
+The published method behind the solve spreads an edit over several layers, which tends to generalise better. Both flaws were re-run with the edit spread over five late layers instead of one, solved bottom-up so that each layer takes its share of the change still missing at the output.
+
+| Held-out (test / controls right) | Unedited | One layer | Five layers |
+|---|---|---|---|
+| Gather, rule teacher | 7 / 15 | **13 / 16** | 9 / 18 |
+| Gather, Opus teacher | 7 / 15 | 13 / 11 | 10 / 14 |
+| Shelter, rule teacher | 7 / 11 | 8 / 11 | **11 / 14** |
+| Shelter, Opus teacher | 7 / 11 | **12 / 13** | 10 / 14 |
+
+Spreading the edit made it **more reliable, not better on average**:
+- **Every five-layer edit improved both sides** over the unedited model, including the Shelter rule teacher that had failed at one layer.
+- **The best single-layer edits still fixed more test cases.** The five-layer ones leaned toward caution.
+
+For a nightly loop, where no one hand-picks the winning edit, the reliable version is the safer default.
+
 ## 6. Relation to other work
 
 **The MIT report, now public.** "Sparks of Weight-Space Programming" (Takehi, Teoh, Zhang and Khattab, November 2026) and its edited checkpoint are now available. For small networks (a car-driving policy, Breakout), GPT-6 Astra wrote new weights from the raw weights in a single reply. For the Qwen model it had a budget of 50 forward passes and "located the cause and edited it out": the model's tendency to loop.

@@ -289,6 +289,118 @@ def auto_where(layer, k):
     print(f"[auto] layer {layer}: {k} neurons")
 
 
+class MultiWrite:
+    """Several layers' patches at once: [(layer, cols, dW)]."""
+
+    def __init__(self, parts, dose=1.0):
+        self.parts = [(l, torch.tensor(c, device="cuda"), (dose * W).half().cuda()) for l, c, W in parts]
+        self.hs = []
+
+    def __enter__(self):
+        for l, ci, dW in self.parts:
+            self.hs.append(st.model.model.layers[l].mlp.down_proj.register_forward_hook(
+                lambda m, inp, out, ci=ci, dW=dW: out + inp[0][..., ci] @ dW.T))
+        return self
+
+    def __exit__(self, *a):
+        for h in self.hs:
+            h.remove()
+        self.hs = []
+
+
+@torch.no_grad()
+def multi_solve(layers, k, lam):
+    """MEMIT-style: the change each teacher example needs at the TOP layer's output
+    (targets-<top>.pt) is spread over several layers, solved bottom-up. Before each
+    layer, the examples are re-run with the layers below already edited; that layer
+    takes 1/(layers left) of the change still missing at the top. Neurons per layer:
+    the published recipe (most active at the answer relative to other text)."""
+    top = layers[-1]
+    T = torch.load(os.path.join(OUT, f"targets-{top}{SUFFIX}.pt"))
+    examples = [(c, order) for c in teacher_cases() for order in st.orders(c)]
+    assert len(examples) == len(T["rows"]), "targets and teacher examples are out of step"
+    want = torch.stack([r["delta"] for r in T["rows"]]).double()  # [n, hidden] change wanted at the top layer
+    state = {}
+    hk = st.model.model.layers[top].register_forward_hook(lambda m, inp, out: state.__setitem__("top", (out[0] if isinstance(out, tuple) else out)[0, -1].float().cpu()))
+
+    def run(layer, parts):
+        """Keys (answer position), protected values and the top layer's output for every example, with parts applied."""
+        cap = {}
+        h = st.model.model.layers[layer].mlp.down_proj.register_forward_pre_hook(lambda m, inp: cap.__setitem__("k", inp[0][0].float().cpu()))
+        keys, prot, tops = [], [], []
+        with MultiWrite(parts):
+            for n, (c, order) in enumerate(examples):
+                st.model(**st.tok(st.prompt(c, [c["acts"][j] for j in order]), return_tensors="pt").to("cuda"))
+                K = cap["k"]
+                keys.append(K[-1])
+                pos = random.Random(n).sample(range(K.shape[0] - 1), min(16, K.shape[0] - 1))
+                prot.append(K[pos])
+                tops.append(state["top"])
+            plain = []
+            for s in PLAIN:
+                st.model(**st.tok(s, return_tensors="pt").to("cuda"))
+                plain.append(cap["k"])
+        h.remove()
+        return torch.stack(keys), torch.cat(prot + plain), torch.stack(tops)
+
+    try:
+        _, _, top0 = run(layers[0], [])
+        parts = []
+        for j, l in enumerate(layers):
+            K, P, tops = run(l, parts)
+            missing = want - (tops.double() - top0.double())  # what the top layer still lacks
+            R = missing / (len(layers) - j)
+            ans = K.abs().mean(0)
+            cols = (ans / (P.abs().mean(0) + 1e-3)).topk(k).indices.sort().values.tolist()
+            Ks, Ps = K[:, cols].double(), P[:, cols].double()
+            n, Np = Ks.shape[0], Ps.shape[0]
+            A = Ks.T @ Ks + lam * (n / Np) * (Ps.T @ Ps)
+            A += 1e-4 * A.diagonal().mean() * torch.eye(A.shape[0], dtype=A.dtype)
+            W = torch.linalg.solve(A, Ks.T @ R).T.float()
+            parts.append((l, cols, W))
+            print(f"[multi] layer {l}: {k} neurons, |dW| {float(W.norm()):.1f}, still missing at the top {float(missing.norm(dim=1).mean()):.1f}", flush=True)
+        _, _, topf = run(layers[-1], parts)
+        left = float((want - (topf.double() - top0.double())).norm(dim=1).mean())
+        print(f"[multi] after all {len(layers)} layers: still missing {left:.1f} of {float(want.norm(dim=1).mean()):.1f}", flush=True)
+    finally:
+        hk.remove()
+    return parts
+
+
+def multi_eval(layers, k, name):
+    cases = halves()
+    check = [c for c in cases if c["half"] == "check"]
+    base_plain = plain_logprobs()
+    tried, solved = [], {}
+    for lam in (1.0, 10.0):
+        solved[lam] = multi_solve(layers, k, lam)
+        for dose in (0.5, 1.0, 1.5, 2.0):
+            with MultiWrite(solved[lam], dose):
+                kl = plain_kl(base_plain)
+                rows = score(check) if kl <= 0.03 else None
+            r = {"lam": lam, "dose": dose, "plainKL": round(kl, 4)}
+            if rows:
+                b = brief(rows, None)
+                r.update({"check": b, "total": b["test"]["right"] + b["control"]["right"]})
+            else:
+                r["refused"] = True
+            tried.append(r)
+            print(f"[eval {name}] lam {lam} dose {dose}: plain KL {kl:.4f}" + (f", check test {r['check']['test']['right']}/20, controls {r['check']['control']['right']}/20" if rows else " (refused)"), flush=True)
+    ok = [r for r in tried if not r.get("refused")]
+    best = max(ok, key=lambda r: (r["total"], -r["plainKL"])) if ok else None
+    result = {"name": name, "layers": layers, "neuronsPerLayer": k, "tried": tried, "chosen": best}
+    if best:
+        with MultiWrite(solved[best["lam"]], best["dose"]):
+            rows = score(cases)
+            kl = plain_kl(base_plain)
+        result["held"] = brief(rows, "held")
+        result["checkFinal"] = brief(rows, "check")
+        result["plainKL"] = round(kl, 4)
+        print(f"[eval {name}] CHOSEN lam {best['lam']} dose {best['dose']}: held-out test {result['held']['test']['right']}/20, "
+              f"controls {result['held']['control']['right']}/20; plain KL {kl:.4f}", flush=True)
+    json.dump(result, open(os.path.join(OUT, f"dw-{name}.json"), "w", encoding="utf8"), indent=1)
+
+
 SUFFIX = ""
 
 
@@ -310,6 +422,8 @@ def main():
     st.load()
     if cmd == "targets":
         targets(int(arg("layer")))
+    elif cmd == "multi":
+        multi_eval([int(x) for x in arg("layers").split(",")], int(arg("k", 256)), arg("name"))
     elif cmd == "eval":
         where = json.load(open(arg("where"), encoding="utf8"))
         evaluate(where, arg("name"))
